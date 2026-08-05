@@ -3,7 +3,15 @@ export * from './auth';
 export type u8 = number & { readonly __brand: 'u8' };
 export type u16 = number & { readonly __brand: 'u16' };
 
-export type InstructionType = 'NOP'|'ADD'|'ADC'|'SUB'|'JP'
+export type InstructionType = 'ADC'|'ADD'|'CALL'|'CCF'|'CPL'|'DAA'|'DEC'|'INC'|'JP'|'JR'|'LD'|'NOP'|'RET'|'RLA'|'RLCA'|'RRA'|'RRCA'|'SCF'|'SUB';
+
+export enum JumpConditions {
+  NotZero,
+  Zero,
+  NotCarry,
+  Carry,
+  Always
+}
 
 export function u8(value: number): u8 {
     return (value & 0xff) as u8;
@@ -20,10 +28,10 @@ export interface FlagsRegister {
     carry: boolean
 }
 
-const ZERO_FLAG_BYTE_POSITION: u8 = u8(7);
-const SUBTRACT_FLAG_BYTE_POSITION: u8 = u8(6);
-const HALF_CARRY_FLAG_BYTE_POSITION: u8 = u8(5);
-const CARRY_FLAG_BYTE_POSITION: u8 = u8(4);
+const ZERO_FLAG_BYTE_POSITION = 7;
+const SUBTRACT_FLAG_BYTE_POSITION = 6;
+const HALF_CARRY_FLAG_BYTE_POSITION = 5;
+const CARRY_FLAG_BYTE_POSITION = 4;
 
 export function flagsRegisterFromByte(byte: u8): FlagsRegister {
     return {
@@ -67,5 +75,23 @@ export class registers {
 
     hl(): u16 {
         return u16((this.h) << 8 | this.l);
+    }
+
+    setBc(value: u16): void
+    {
+        this.b = u8(value & 0xf0 >> 4);
+        this.c = u8(value & 0xf);
+    }
+
+    setDe(value: u16): void
+    {
+        this.d = u8(value & 0xf0 >> 4);
+        this.e = u8(value & 0xf);
+    }
+
+    setHl(value: u16): void
+    {
+        this.h = u8(value & 0xf0 >> 4);
+        this.l = u8(value & 0xf);
     }
 }
