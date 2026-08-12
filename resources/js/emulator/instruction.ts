@@ -1,7 +1,7 @@
 import { InstructionType, JumpConditions } from "@/types";
 
 export enum ArithmeticTarget {
-  A, B, C, D, E, H, L, BC, DE, HL, SP, U8, U16, HLP, BCP, DEP, HLI, HLD
+  A, B, C, D, E, H, L, AF, BC, DE, HL, SP, SPI8, U8, U16, HLP, BCP, DEP, HLI, HLD, FFCP, FFU8P
 }
 
 
@@ -10,7 +10,7 @@ export class Instruction {
     target;
     loadTarget;
 
-    constructor(kind: InstructionType, target: ArithmeticTarget|JumpConditions, loadTarget: ArithmeticTarget|null = null) {
+    constructor(kind: InstructionType, target: ArithmeticTarget|JumpConditions|number, loadTarget: ArithmeticTarget|null = null) {
         this.kind = kind;
         this.target = target;
         this.loadTarget = loadTarget;

@@ -3,7 +3,7 @@ export * from './auth';
 export type u8 = number & { readonly __brand: 'u8' };
 export type u16 = number & { readonly __brand: 'u16' };
 
-export type InstructionType = 'ADC'|'ADD'|'CALL'|'CCF'|'CPL'|'DAA'|'DEC'|'INC'|'JP'|'JR'|'LD'|'NOP'|'RET'|'RLA'|'RLCA'|'RRA'|'RRCA'|'SCF'|'SUB';
+export type InstructionType = 'ADC'|'ADD'|'AND'|'CALL'|'CCF'|'CP'|'CPL'|'DAA'|'DEC'|'DI'|'EI'|'HALT'|'INC'|'JP'|'JR'|'LD'|'NOP'|'OR'|'POP'|'PUSH'|'RET'|'RETI'|'RLA'|'RLC'|'RLCA'|'RRA'|'RRC'|'RRCA'|'RST'|'SBC'|'SCF'|'SUB'|'XOR';
 
 export enum JumpConditions {
   NotZero,
@@ -75,6 +75,12 @@ export class registers {
 
     hl(): u16 {
         return u16((this.h) << 8 | this.l);
+    }
+
+    setAf(value: u16): void
+    {
+        this.a = u8(value & 0xf0 >> 4);
+        this.f = flagsRegisterFromByte(u8(value & 0xf));
     }
 
     setBc(value: u16): void
