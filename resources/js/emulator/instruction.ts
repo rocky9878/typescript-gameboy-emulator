@@ -1,7 +1,7 @@
 import { InstructionType, JumpConditions } from "@/types";
 
 export enum ArithmeticTarget {
-  A, B, C, D, E, H, L, AF, BC, DE, HL, SP, SPI8, U8, U16, HLP, BCP, DEP, HLI, HLD, FFCP, FFU8P
+  A, B, C, D, E, H, L, AF, BC, DE, HL, SP, SPI8, U8, U16, U16P, HLP, BCP, DEP, HLI, HLD, FFCP, FFU8P
 }
 
 
