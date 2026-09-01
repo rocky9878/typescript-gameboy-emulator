@@ -2,6 +2,19 @@ import { u8 } from '.';
 
 export type JoypadButton = 'up' | 'down' | 'left' | 'right' | 'a' | 'b' | 'select' | 'start';
 
+export interface JoypadState {
+    selectDpad: boolean;
+    selectButtons: boolean;
+    up: boolean;
+    down: boolean;
+    left: boolean;
+    right: boolean;
+    a: boolean;
+    b: boolean;
+    select: boolean;
+    start: boolean;
+}
+
 // 0xFF00 (P1/JOYP): bits 4-5 select which group of four buttons the lower
 // nibble reports (both write-only from the game's side), bits 0-3 read back
 // the state of the selected group, active-low (0 = pressed).
@@ -54,5 +67,33 @@ export class Joypad {
                 this.requestInterrupt();
             }
         }
+    }
+
+    getState(): JoypadState {
+        return {
+            selectDpad: this.selectDpad,
+            selectButtons: this.selectButtons,
+            up: this.up,
+            down: this.down,
+            left: this.left,
+            right: this.right,
+            a: this.a,
+            b: this.b,
+            select: this.select,
+            start: this.start,
+        };
+    }
+
+    setState(state: JoypadState): void {
+        this.selectDpad = state.selectDpad;
+        this.selectButtons = state.selectButtons;
+        this.up = state.up;
+        this.down = state.down;
+        this.left = state.left;
+        this.right = state.right;
+        this.a = state.a;
+        this.b = state.b;
+        this.select = state.select;
+        this.start = state.start;
     }
 }

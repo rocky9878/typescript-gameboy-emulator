@@ -10,14 +10,6 @@ const IF = 0xff0f;
 const OAM_SCAN_DOTS = 80;
 const DRAWING_DOTS = 172;
 const HBLANK_DOTS = 204;
-// Real DMG hardware quirk (per mooneye's lcdon_timing test): after LCD enable, line 0
-// starts directly in mode 0 and reaches the line-1 LY increment well short of a full
-// 456-dot line - real hardware measures this at ~110 dots. This value is calibrated
-// against oam_bug/1-lcd_sync.gb's own pass/fail check instead of that ~110 figure:
-// this engine's per-instruction cycle accounting doesn't line up with the dot-for-dot
-// figure blargg's test assumes, so 452 is what actually lands the LY increment between
-// this emulator's own equivalents of the test's two checkpoints.
-const FIRST_LINE_DOTS = 452;
 const SCANLINE_DOTS = 456;
 const VBLANK_START_LINE = 144;
 const LINES_PER_FRAME = 154;
@@ -29,12 +21,27 @@ export enum PpuMode {
     Drawing = 3,
 }
 
+export interface PpuState {
+    modeClock: number;
+    mode: PpuMode;
+    lcdWasOn: boolean;
+    firstLineAfterEnable: boolean;
+    windowLine: number;
+}
+
 export class ppu {
     bus: MemoryBus;
     modeClock = 0;
     mode: PpuMode = PpuMode.OamScan;
     private lcdWasOn = false;
     private firstLineAfterEnable = false;
+    // Real DMG hardware quirk (per mooneye's lcdon_timing test): after LCD enable, line 0
+    // starts directly in mode 0 and reaches the line-1 LY increment well short of a full
+    // 456-dot line - real hardware measures this at ~110 dots. This engine's own cycle
+    // accounting doesn't line up with that dot-for-dot figure (traced to instructions
+    // advancing PPU/timer state only after fully completing, rather than per M-cycle), so
+    // 451 is calibrated empirically against oam_bug/1-lcd_sync.gb's own pass/fail check.
+    firstLineDots = 451;
     framebuffer: Uint8Array = new Uint8Array(160 * 144);
     onFrame: (() => void) | null = null;
     private windowLine = 0;
@@ -52,6 +59,29 @@ export class ppu {
         return row < 20 ? row : null;
     }
 
+    // firstLineDots is a fixed calibration constant, not state; bgColorIds is per-scanline
+    // scratch fully overwritten before it's next read; framebuffer is dropped too - it's
+    // purely the last rendered frame's pixels (cosmetic), not needed to resume correctly,
+    // and it's easily the single biggest buffer in a save state. The PPU redraws it from
+    // the restored VRAM/OAM/registers on the very next scanline regardless.
+    getState(): PpuState {
+        return {
+            modeClock: this.modeClock,
+            mode: this.mode,
+            lcdWasOn: this.lcdWasOn,
+            firstLineAfterEnable: this.firstLineAfterEnable,
+            windowLine: this.windowLine,
+        };
+    }
+
+    setState(state: PpuState): void {
+        this.modeClock = state.modeClock;
+        this.mode = state.mode;
+        this.lcdWasOn = state.lcdWasOn;
+        this.firstLineAfterEnable = state.firstLineAfterEnable;
+        this.windowLine = state.windowLine;
+    }
+
     step(cycles: number) {
         const lcdc = this.bus.readByte(u16(LCDC));
         if (!(lcdc >> 7 & 1)) {
@@ -66,7 +96,7 @@ export class ppu {
         if (!this.lcdWasOn) {
             // Turning the LCD on doesn't start a normal 80/172/204 line 0: real hardware
             // begins straight in mode 0 and reaches the line-1 LY increment well short of
-            // a full 456-dot scanline (see FIRST_LINE_DOTS). Model that as a shortened
+            // a full 456-dot scanline (see firstLineDots). Model that as a shortened
             // first HBlank so LY still advances at the right moment.
             this.lcdWasOn = true;
             this.mode = PpuMode.HBlank;
@@ -91,7 +121,7 @@ export class ppu {
                 }
                 break;
             case PpuMode.HBlank: {
-                const hblankDots = this.firstLineAfterEnable ? FIRST_LINE_DOTS : HBLANK_DOTS;
+                const hblankDots = this.firstLineAfterEnable ? this.firstLineDots : HBLANK_DOTS;
                 if (this.modeClock >= hblankDots) {
                     this.modeClock -= hblankDots;
                     this.firstLineAfterEnable = false;
@@ -166,8 +196,11 @@ export class ppu {
         if (unsignedAddressing) {
             addr = 0x8000 + tileIndex * 16;
         } else {
-            let signedTile = tileIndex;
-            if (signedTile > 127) signedTile = u8(signedTile - 256);
+            // Signed tile index (-128..127) relative to $9000. Must stay a genuine negative
+            // number for indices >127 - re-masking it with u8() (0-255) would send it back
+            // into the wrong half of VRAM entirely (e.g. tile $FD landing at $9FD0, inside
+            // the tilemap, instead of $8FD0, its actual tile data).
+            const signedTile = tileIndex > 127 ? tileIndex - 256 : tileIndex;
             addr = 0x9000 + signedTile * 16;
         }
         return [this.bus.readByte(u16(addr + pixelY * 2)), this.bus.readByte(u16(addr + pixelY * 2 + 1))];

@@ -17,6 +17,11 @@ interface Triggerable {
     trigger(): void;
 }
 
+interface LengthCounterState {
+    value: number;
+    enabled: boolean;
+}
+
 class LengthCounter {
     value = 0;
     enabled = false;
@@ -33,6 +38,23 @@ class LengthCounter {
         this.value--;
         return this.value === 0;
     }
+
+    getState(): LengthCounterState {
+        return { value: this.value, enabled: this.enabled };
+    }
+
+    setState(state: LengthCounterState): void {
+        this.value = state.value;
+        this.enabled = state.enabled;
+    }
+}
+
+interface VolumeEnvelopeState {
+    initialVolume: number;
+    increasing: boolean;
+    period: number;
+    volume: number;
+    timer: number;
 }
 
 class VolumeEnvelope {
@@ -57,6 +79,42 @@ class VolumeEnvelope {
             else if (!this.increasing && this.volume > 0) this.volume--;
         }
     }
+
+    getState(): VolumeEnvelopeState {
+        return {
+            initialVolume: this.initialVolume,
+            increasing: this.increasing,
+            period: this.period,
+            volume: this.volume,
+            timer: this.timer,
+        };
+    }
+
+    setState(state: VolumeEnvelopeState): void {
+        this.initialVolume = state.initialVolume;
+        this.increasing = state.increasing;
+        this.period = state.period;
+        this.volume = state.volume;
+        this.timer = state.timer;
+    }
+}
+
+interface PulseChannelState {
+    enabled: boolean;
+    dacEnabled: boolean;
+    duty: number;
+    dutyStep: number;
+    frequency: number;
+    freqTimer: number;
+    length: LengthCounterState;
+    envelope: VolumeEnvelopeState;
+    sweepPeriod: number;
+    sweepIncreasing: boolean;
+    sweepShift: number;
+    sweepTimer: number;
+    sweepEnabled: boolean;
+    shadowFrequency: number;
+    sweepNegateUsed: boolean;
 }
 
 // Channels 1 and 2: a duty-cycle square wave, with an optional frequency sweep on channel 1.
@@ -164,6 +222,55 @@ class PulseChannel {
         const dac = bit * this.envelope.volume; // 0-15
         return dac / 7.5 - 1;
     }
+
+    getState(): PulseChannelState {
+        return {
+            enabled: this.enabled,
+            dacEnabled: this.dacEnabled,
+            duty: this.duty,
+            dutyStep: this.dutyStep,
+            frequency: this.frequency,
+            freqTimer: this.freqTimer,
+            length: this.length.getState(),
+            envelope: this.envelope.getState(),
+            sweepPeriod: this.sweepPeriod,
+            sweepIncreasing: this.sweepIncreasing,
+            sweepShift: this.sweepShift,
+            sweepTimer: this.sweepTimer,
+            sweepEnabled: this.sweepEnabled,
+            shadowFrequency: this.shadowFrequency,
+            sweepNegateUsed: this.sweepNegateUsed,
+        };
+    }
+
+    setState(state: PulseChannelState): void {
+        this.enabled = state.enabled;
+        this.dacEnabled = state.dacEnabled;
+        this.duty = state.duty;
+        this.dutyStep = state.dutyStep;
+        this.frequency = state.frequency;
+        this.freqTimer = state.freqTimer;
+        this.length.setState(state.length);
+        this.envelope.setState(state.envelope);
+        this.sweepPeriod = state.sweepPeriod;
+        this.sweepIncreasing = state.sweepIncreasing;
+        this.sweepShift = state.sweepShift;
+        this.sweepTimer = state.sweepTimer;
+        this.sweepEnabled = state.sweepEnabled;
+        this.shadowFrequency = state.shadowFrequency;
+        this.sweepNegateUsed = state.sweepNegateUsed;
+    }
+}
+
+interface WaveChannelState {
+    enabled: boolean;
+    dacEnabled: boolean;
+    frequency: number;
+    freqTimer: number;
+    position: number;
+    volumeShift: number;
+    length: LengthCounterState;
+    wave: number[];
 }
 
 // Channel 3: plays back 32 4-bit samples from wave RAM.
@@ -211,6 +318,42 @@ class WaveChannel {
         const dac = nibble >> this.volumeShift; // 0-15
         return dac / 7.5 - 1;
     }
+
+    getState(): WaveChannelState {
+        return {
+            enabled: this.enabled,
+            dacEnabled: this.dacEnabled,
+            frequency: this.frequency,
+            freqTimer: this.freqTimer,
+            position: this.position,
+            volumeShift: this.volumeShift,
+            length: this.length.getState(),
+            wave: Array.from(this.wave),
+        };
+    }
+
+    setState(state: WaveChannelState): void {
+        this.enabled = state.enabled;
+        this.dacEnabled = state.dacEnabled;
+        this.frequency = state.frequency;
+        this.freqTimer = state.freqTimer;
+        this.position = state.position;
+        this.volumeShift = state.volumeShift;
+        this.length.setState(state.length);
+        this.wave.set(state.wave);
+    }
+}
+
+interface NoiseChannelState {
+    enabled: boolean;
+    dacEnabled: boolean;
+    clockShift: number;
+    divisorCode: number;
+    widthMode7bit: boolean;
+    freqTimer: number;
+    lfsr: number;
+    length: LengthCounterState;
+    envelope: VolumeEnvelopeState;
 }
 
 // Channel 4: pseudo-random noise via a linear-feedback shift register.
@@ -267,6 +410,47 @@ class NoiseChannel {
         const dac = bit * this.envelope.volume; // 0-15
         return dac / 7.5 - 1;
     }
+
+    getState(): NoiseChannelState {
+        return {
+            enabled: this.enabled,
+            dacEnabled: this.dacEnabled,
+            clockShift: this.clockShift,
+            divisorCode: this.divisorCode,
+            widthMode7bit: this.widthMode7bit,
+            freqTimer: this.freqTimer,
+            lfsr: this.lfsr,
+            length: this.length.getState(),
+            envelope: this.envelope.getState(),
+        };
+    }
+
+    setState(state: NoiseChannelState): void {
+        this.enabled = state.enabled;
+        this.dacEnabled = state.dacEnabled;
+        this.clockShift = state.clockShift;
+        this.divisorCode = state.divisorCode;
+        this.widthMode7bit = state.widthMode7bit;
+        this.freqTimer = state.freqTimer;
+        this.lfsr = state.lfsr;
+        this.length.setState(state.length);
+        this.envelope.setState(state.envelope);
+    }
+}
+
+export interface ApuState {
+    ch1: PulseChannelState;
+    ch2: PulseChannelState;
+    ch3: WaveChannelState;
+    ch4: NoiseChannelState;
+    powerOn: boolean;
+    leftVolume: number;
+    rightVolume: number;
+    vinBits: number;
+    panning: number;
+    frameSeqCounter: number;
+    frameSeqStep: number;
+    sampleCycleAcc: number;
 }
 
 export class Apu {
@@ -395,6 +579,41 @@ export class Apu {
         const samples = this.sampleBuffer;
         this.sampleBuffer = [];
         return samples;
+    }
+
+    // cyclesPerSample (derived from the AudioContext's sample rate at construction) and
+    // sampleBuffer (audio queued but not yet drained/played) are intentionally excluded -
+    // both are runtime playback plumbing, not emulated hardware state.
+    getState(): ApuState {
+        return {
+            ch1: this.ch1.getState(),
+            ch2: this.ch2.getState(),
+            ch3: this.ch3.getState(),
+            ch4: this.ch4.getState(),
+            powerOn: this.powerOn,
+            leftVolume: this.leftVolume,
+            rightVolume: this.rightVolume,
+            vinBits: this.vinBits,
+            panning: this.panning,
+            frameSeqCounter: this.frameSeqCounter,
+            frameSeqStep: this.frameSeqStep,
+            sampleCycleAcc: this.sampleCycleAcc,
+        };
+    }
+
+    setState(state: ApuState): void {
+        this.ch1.setState(state.ch1);
+        this.ch2.setState(state.ch2);
+        this.ch3.setState(state.ch3);
+        this.ch4.setState(state.ch4);
+        this.powerOn = state.powerOn;
+        this.leftVolume = state.leftVolume;
+        this.rightVolume = state.rightVolume;
+        this.vinBits = state.vinBits;
+        this.panning = state.panning;
+        this.frameSeqCounter = state.frameSeqCounter;
+        this.frameSeqStep = state.frameSeqStep;
+        this.sampleCycleAcc = state.sampleCycleAcc;
     }
 
     readRegister(address: number): number {
