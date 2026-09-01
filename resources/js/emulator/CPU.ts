@@ -1,9 +1,9 @@
 import { overflowingAdd8, overflowingAdd16, overflowingSub8, overflowingSub16, overflowed } from "@/lib/utils";
-import { JumpConditions, MemoryBus, registers, rom, u16, u8, bytesToBase64, base64ToBytes   } from "@/types";
-import type {FlagsRegister, MemoryBusState} from "@/types";
-import { Apu } from "@/types/apu";
-import type { JoypadButton } from "@/types/joypad";
-import { createMbc } from "@/types/mbc";
+import { JumpConditions, MemoryBus, registers, rom, u16, u8, bytesToBase64, base64ToBytes   } from ".";
+import type {FlagsRegister, MemoryBusState} from ".";
+import { Apu } from "./apu";
+import type { JoypadButton } from "./joypad";
+import { createMbc } from "./mbc";
 import type { Instruction } from "./instruction";
 import { ArithmeticTarget } from "./instruction";
 import { instructionFromByte } from "./opcodes";

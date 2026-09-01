@@ -3,7 +3,7 @@ import { createMbc, Mbc0, type Mbc } from './mbc';
 import { Joypad, type JoypadState } from './joypad';
 import { Apu, type ApuState } from './apu';
 
-export * from './auth';
+export * from '@/types/auth';
 
 export type u8 = number & { readonly __brand: 'u8' };
 export type u16 = number & { readonly __brand: 'u16' };

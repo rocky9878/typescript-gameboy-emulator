@@ -1,4 +1,4 @@
-import { JumpConditions, u8 } from '@/types';
+import { JumpConditions, u8 } from '.';
 import { ArithmeticTarget, Instruction } from './instruction';
 
 export const unprefixed: Record<number, Instruction> = {

@@ -1,7 +1,8 @@
-import { u16, u8 } from '@/types';
 import { clsx } from 'clsx';
 import type { ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
+
+import { u16, u8 } from '@/emulator';
 
 export function cn(...inputs: ClassValue[]) {
     return twMerge(clsx(inputs));
