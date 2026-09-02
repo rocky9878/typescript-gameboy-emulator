@@ -17,7 +17,7 @@ return new class extends Migration
             $table->foreignIdFor(User::class);
             $table->text('save_data');
             $table->string('rom_name');
-            $table->tinyIncrements('slot');
+            $table->unsignedTinyInteger('slot');
             $table->timestamps();
         });
     }
