@@ -470,12 +470,18 @@ export class Apu {
 
     private sampleCycleAcc = 0;
     private cyclesPerSample: number;
+    private sampleRate: number;
 
     // Interleaved stereo float samples in [-1, 1], drained by the audio backend.
     sampleBuffer: number[] = [];
 
     constructor(sampleRate: number = 44100) {
+        this.sampleRate = sampleRate;
         this.cyclesPerSample = CPU_SPEED / sampleRate;
+    }
+
+    setSpeed(speed: number): void {
+        this.cyclesPerSample = (CPU_SPEED * speed) / this.sampleRate;
     }
 
     // Length is clocked on even frame-sequencer steps (256Hz out of the 512Hz sequencer).

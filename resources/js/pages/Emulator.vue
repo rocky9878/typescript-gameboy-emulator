@@ -3,7 +3,10 @@ import { onMounted, ref, useTemplateRef } from 'vue';
 import { run, setCpuSpeed } from '@/emulator/CPU';
 import type { CPU } from '@/emulator/CPU';
 import type { JoypadButton } from '@/emulator/joypad';
-import { ChevronsRight, HardDriveDownload, SavePen } from '@lucide/vue';
+import { ChevronsRight, HardDriveDownload, HardDriveUpload, Save, SavePen, Upload } from '@lucide/vue';
+import DropdownMenu from '@/components/ui/dropdown-menu/DropdownMenu.vue';
+import DropdownMenuTrigger from '@/components/ui/dropdown-menu/DropdownMenuTrigger.vue';
+import { DropdownMenuContent } from 'reka-ui';
 
 const canvas = useTemplateRef<HTMLCanvasElement>('canvas');
 
@@ -37,6 +40,7 @@ function loadState(json: string): Promise<void> {
 
 async function onSaveClick() {
     state.value = await saveState();
+    console.log(state.value);
 }
 
 async function onLoadClick() {
@@ -84,9 +88,18 @@ function release(button: JoypadButton) {
     <div class="max-h-screen overflow-hidden">
         <div class="flex gap-2 flex-col h-screen w-full items-center justify-center bg-neutral-900 md:scale-150">
             <div class="rounded-full flex text-blue-600 bg-gray-100 gap-2">
-                <div class="cursor-pointer flex justify-center items-center size-10 relative rounded-full"><SavePen/></div>
-                <div class="cursor-pointer flex justify-center items-center size-10 relative rounded-full"><HardDriveDownload/></div>
-                <div class="cursor-pointer flex justify-center items-center size-10 relative rounded-full" :class="{'bg-black/20': speed != 1}" @click="incrementSpeed"><ChevronsRight/><p class="text-[10px] top-6 left-3.5 text-gray-700 absolute">x{{ speed }}</p></div>
+                <div title="Upload ROM" class="cursor-pointer flex justify-center items-center size-10 relative rounded-full"><Upload/></div>
+                <div title="Save State" class="cursor-pointer flex justify-center items-center size-10 relative rounded-full" @click="onSaveClick">
+                    <DropdownMenu>
+                        <DropdownMenuTrigger><HardDriveDownload/></DropdownMenuTrigger>
+                        <DropdownMenuContent>
+
+                        </DropdownMenuContent>
+                    </DropdownMenu>
+
+                </div>
+                <div title="Load State" class="cursor-pointer flex justify-center items-center size-10 relative rounded-full"><HardDriveUpload/></div>
+                <div title="Emulation Speed" class="cursor-pointer flex justify-center items-center size-10 relative rounded-full" :class="{'bg-black/20': speed != 1}" @click="incrementSpeed"><ChevronsRight/><p class="text-[10px] top-6 left-3.5 text-gray-700 absolute">x{{ speed }}</p></div>
             </div>
             <div class="relative w-70 rounded-3xl rounded-br-[72px] border-t border-white/50 bg-gray-100 pt-5 pb-8 shadow-[0_25px_60px_rgba(0,0,0,0.55)]">
                     <div class="w-55 bg-gray-300 relative rounded-lg rounded-br-4xl mx-auto overflow-hidden">

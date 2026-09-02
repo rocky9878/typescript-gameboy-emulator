@@ -1356,8 +1356,13 @@ const KEY_TO_BUTTON: Record<string, JoypadButton> = {
 // so the drift can't accumulate regardless of the display's true refresh rate.
 let CPU_SPEED = 4194304;
 
+let runningApu: Apu | null = null;
+
 export function setCpuSpeed(speed: 1|2|3) {
     CPU_SPEED = 4194304 * speed;
+    // Keep the APU's sample spacing in step with the new cycle rate, otherwise it produces
+    // samples faster than the audio backend drains them and playback latency runs away.
+    runningApu?.setSpeed(speed);
 }
 
 // Returns the running CPU instance so callers (e.g. the Vue page) can reach
@@ -1375,7 +1380,19 @@ export async function run(canvas?: HTMLCanvasElement): Promise<CPU> {
 
     const audioCtx = new AudioContext();
     cpu.bus.apu = new Apu(audioCtx.sampleRate);
-    let nextChunkTime = audioCtx.currentTime;
+    runningApu = cpu.bus.apu;
+
+    // How far ahead of currentTime the first chunk in a fresh run of chunks is scheduled.
+    // Scheduling a buffer at (or a millisecond after) currentTime routinely underruns - the
+    // browser hasn't finished wiring the node into the graph before its start time passes -
+    // which is the crackle heard at ROM startup and after any resync. One chunk of lead
+    // absorbs that without adding meaningful latency.
+    const SCHEDULE_LEAD = 0.06;
+    // If scheduled audio ever gets this far ahead of playback, throw the backlog away and
+    // resync rather than letting the gap grow forever (mobile rAF hitching, a speed change
+    // mid-stream, or a tab that was briefly throttled all cause this).
+    const MAX_LATENCY = 0.25;
+    let nextChunkTime = audioCtx.currentTime + SCHEDULE_LEAD;
     // Samples generated per requestAnimationFrame tick vary in count now that cycle
     // advancement is paced by real elapsed time rather than a fixed cycles-per-callback
     // amount (see the CPU_SPEED pacing below) - scheduling a differently-sized
@@ -1406,7 +1423,7 @@ export async function run(canvas?: HTMLCanvasElement): Promise<CPU> {
             for (const source of activeSources) source.stop();
             activeSources.clear();
             pendingSamples.length = 0;
-            nextChunkTime = audioCtx.currentTime;
+            nextChunkTime = audioCtx.currentTime + SCHEDULE_LEAD;
             void audioCtx.suspend();
         } else {
             void audioCtx.resume();
@@ -1476,13 +1493,23 @@ export async function run(canvas?: HTMLCanvasElement): Promise<CPU> {
             // heard - a permanent delay equal to however long the page sat idle first.
             // Drop samples generated pre-resume instead; there's nothing worth hearing yet.
             pendingSamples.length = 0;
-            nextChunkTime = audioCtx.currentTime;
+            nextChunkTime = audioCtx.currentTime + SCHEDULE_LEAD;
             requestAnimationFrame(tick);
 
             return;
         }
 
         for (let i = 0; i < samples.length; i++) pendingSamples.push(samples[i]);
+
+        // Playback has fallen too far behind generation - drop the backlog and resync so the
+        // gap can't keep growing. Covers a runaway queue from mobile hitching or a mid-stream
+        // speed change faster than setSpeed() can rebalance it.
+        if (nextChunkTime - audioCtx.currentTime > MAX_LATENCY) {
+            for (const source of activeSources) source.stop();
+            activeSources.clear();
+            pendingSamples.length = 0;
+            nextChunkTime = audioCtx.currentTime + SCHEDULE_LEAD;
+        }
 
         while (pendingSamples.length >= CHUNK_FRAMES * 2) {
             const chunk = pendingSamples.splice(0, CHUNK_FRAMES * 2);
@@ -1500,9 +1527,11 @@ export async function run(canvas?: HTMLCanvasElement): Promise<CPU> {
             source.connect(audioCtx.destination);
 
             // Fell behind (e.g. backgrounded tab)? Don't let queued audio pile up and play back-to-back late.
-            if (nextChunkTime < audioCtx.currentTime) nextChunkTime = audioCtx.currentTime;
+            if (nextChunkTime < audioCtx.currentTime) nextChunkTime = audioCtx.currentTime + SCHEDULE_LEAD;
 
             source.start(nextChunkTime);
+            activeSources.add(source);
+            source.onended = () => activeSources.delete(source);
             nextChunkTime += audioBuffer.duration;
         }
 
