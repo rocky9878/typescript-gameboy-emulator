@@ -7,6 +7,10 @@ namespace App\Providers;
 use App\Actions\Fortify\CreateNewUser;
 /* @end-chisel-registration */
 use App\Actions\Fortify\ResetUserPassword;
+use App\Actions\Fortify\UpdateUserPassword;
+use App\Actions\Fortify\UpdateUserProfileInformation;
+use App\Http\Responses\PasswordUpdateResponse;
+use App\Http\Responses\ProfileInformationUpdatedResponse;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\RateLimiter;
@@ -24,7 +28,17 @@ class FortifyServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        //
+        // Flash a success toast (and redirect back) after Fortify updates the
+        // user's password or profile information, matching the rest of the app.
+        $this->app->singleton(
+            \Laravel\Fortify\Contracts\PasswordUpdateResponse::class,
+            PasswordUpdateResponse::class,
+        );
+
+        $this->app->singleton(
+            \Laravel\Fortify\Contracts\ProfileInformationUpdatedResponse::class,
+            ProfileInformationUpdatedResponse::class,
+        );
     }
 
     /**
@@ -43,6 +57,8 @@ class FortifyServiceProvider extends ServiceProvider
     private function configureActions(): void
     {
         Fortify::resetUserPasswordsUsing(ResetUserPassword::class);
+        Fortify::updateUserPasswordsUsing(UpdateUserPassword::class);
+        Fortify::updateUserProfileInformationUsing(UpdateUserProfileInformation::class);
         /* @chisel-registration */
         Fortify::createUsersUsing(CreateNewUser::class);
         /* @end-chisel-registration */

@@ -35,7 +35,7 @@ import UserMenuContent from '@/components/UserMenuContent.vue';
 import { useCurrentUrl } from '@/composables/useCurrentUrl';
 import { getInitials } from '@/composables/useInitials';
 import { toUrl } from '@/lib/utils';
-import { dashboard } from '@/routes';
+import { index } from '@/routes';
 import type { BreadcrumbItem, NavItem } from '@/types';
 
 type Props = {
@@ -56,7 +56,7 @@ const activeItemStyles =
 const mainNavItems: NavItem[] = [
     {
         title: 'Dashboard',
-        href: dashboard(),
+        href: index(),
         icon: LayoutGrid,
     },
 ];
@@ -146,7 +146,7 @@ const rightNavItems: NavItem[] = [
                     </Sheet>
                 </div>
 
-                <Link :href="dashboard()" class="flex items-center gap-x-2">
+                <Link :href="index()" class="flex items-center gap-x-2">
                     <AppLogo />
                 </Link>
 
@@ -251,12 +251,12 @@ const rightNavItems: NavItem[] = [
                                     <AvatarImage
                                         v-if="auth.user.avatar"
                                         :src="auth.user.avatar"
-                                        :alt="auth.user.name"
+                                        :alt="auth.user.username"
                                     />
                                     <AvatarFallback
                                         class="rounded-lg bg-neutral-200 font-semibold text-black dark:bg-neutral-700 dark:text-white"
                                     >
-                                        {{ getInitials(auth.user?.name) }}
+                                        {{ getInitials(auth.user?.username) }}
                                     </AvatarFallback>
                                 </Avatar>
                             </Button>

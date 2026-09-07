@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { Form, Head } from '@inertiajs/vue3';
-import SecurityController from '@/actions/App/Http/Controllers/Settings/SecurityController';
 import Heading from '@/components/Heading.vue';
 import InputError from '@/components/InputError.vue';
 import PasswordInput from '@/components/PasswordInput.vue';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { edit } from '@/routes/security';
+import { update } from '@/routes/user-password';
 
 type Props = {
     passwordRules: string;
@@ -39,7 +39,8 @@ defineOptions({
         />
 
         <Form
-            v-bind="SecurityController.update.form()"
+            v-bind="update.form()"
+            error-bag="updatePassword"
             :options="{
                 preserveScroll: true,
             }"

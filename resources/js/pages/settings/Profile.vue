@@ -1,10 +1,6 @@
 <script setup lang="ts">
 import { Form, Head, usePage } from '@inertiajs/vue3';
-/* @chisel-email-verification */
-import { Link } from '@inertiajs/vue3';
-/* @end-chisel-email-verification */
 import { computed } from 'vue';
-import ProfileController from '@/actions/App/Http/Controllers/Settings/ProfileController';
 import DeleteUser from '@/components/DeleteUser.vue';
 import Heading from '@/components/Heading.vue';
 import InputError from '@/components/InputError.vue';
@@ -12,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { edit } from '@/routes/profile';
+import { update } from '@/routes/user-profile-information';
 
 defineOptions({
     layout: {
@@ -41,22 +38,23 @@ const user = computed(() => page.props.auth.user);
         />
 
         <Form
-            v-bind="ProfileController.update.form()"
+            v-bind="update.form()"
+            error-bag="updateProfileInformation"
             class="space-y-6"
             v-slot="{ errors, processing }"
         >
             <div class="grid gap-2">
-                <Label for="name">Name</Label>
+                <Label for="username">Username</Label>
                 <Input
-                    id="name"
+                    id="username"
                     class="mt-1 block w-full"
-                    name="name"
-                    :default-value="user.name"
+                    name="username"
+                    :default-value="user.username"
                     required
-                    autocomplete="name"
-                    placeholder="Full name"
+                    autocomplete="username"
+                    placeholder="Username"
                 />
-                <InputError class="mt-2" :message="errors.name" />
+                <InputError class="mt-2" :message="errors.username" />
             </div>
 
             <div class="grid gap-2">
@@ -68,33 +66,11 @@ const user = computed(() => page.props.auth.user);
                     name="email"
                     :default-value="user.email"
                     required
-                    autocomplete="username"
+                    autocomplete="email"
                     placeholder="Email address"
                 />
                 <InputError class="mt-2" :message="errors.email" />
             </div>
-
-            <!-- @chisel-email-verification -->
-            <div v-if="page.props.mustVerifyEmail && !user.email_verified_at">
-                <p class="text-muted-foreground -mt-4 text-sm">
-                    Your email address is unverified.
-                    <Link
-                        :href="send()"
-                        as="button"
-                        class="text-foreground underline decoration-neutral-300 underline-offset-4 transition-colors duration-300 ease-out hover:decoration-current! dark:decoration-neutral-500"
-                    >
-                        Click here to re-send the verification email.
-                    </Link>
-                </p>
-
-                <div
-                    v-if="page.props.status === 'verification-link-sent'"
-                    class="mt-2 text-sm font-medium text-green-600"
-                >
-                    A new verification link has been sent to your email address.
-                </div>
-            </div>
-            <!-- @end-chisel-email-verification -->
 
             <div class="flex items-center gap-4">
                 <Button :disabled="processing" data-test="update-profile-button"

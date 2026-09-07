@@ -11,7 +11,6 @@ Route::middleware(['auth'])->group(function () {
     Route::redirect('settings', '/settings/profile');
 
     Route::get('settings/profile', [ProfileController::class, 'edit'])->name('profile.edit');
-    Route::patch('settings/profile', [ProfileController::class, 'update'])->name('profile.update');
 });
 
 Route::middleware(['auth', 'verified'])->group(function () {
@@ -22,10 +21,6 @@ Route::middleware(['auth', 'verified'])->group(function () {
         ->middleware(RequirePassword::class)
         /* @end-chisel-password-confirmation */
         ->name('security.edit');
-
-    Route::put('settings/password', [SecurityController::class, 'update'])
-        ->middleware('throttle:6,1')
-        ->name('user-password.update');
 
     Route::inertia('settings/appearance', 'settings/Appearance')->name('appearance.edit');
 });

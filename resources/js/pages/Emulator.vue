@@ -1,12 +1,12 @@
 <script setup lang="ts">
+import { ChevronsRight, HardDriveDownload, HardDriveUpload, Upload } from '@lucide/vue';
+import { DropdownMenuContent } from 'reka-ui';
 import { onMounted, onUnmounted, ref, useTemplateRef } from 'vue';
+import DropdownMenu from '@/components/ui/dropdown-menu/DropdownMenu.vue';
+import DropdownMenuTrigger from '@/components/ui/dropdown-menu/DropdownMenuTrigger.vue';
 import { run, setCpuSpeed } from '@/emulator/CPU';
 import type { CPU } from '@/emulator/CPU';
 import type { JoypadButton } from '@/emulator/joypad';
-import { ChevronsRight, HardDriveDownload, HardDriveUpload, Upload } from '@lucide/vue';
-import DropdownMenu from '@/components/ui/dropdown-menu/DropdownMenu.vue';
-import DropdownMenuTrigger from '@/components/ui/dropdown-menu/DropdownMenuTrigger.vue';
-import { DropdownMenuContent } from 'reka-ui';
 
 const canvas = useTemplateRef<HTMLCanvasElement>('canvas');
 
@@ -67,6 +67,7 @@ function incrementSpeed() {
     if (!cpu) {
         throw new Error('Emulator not running yet');
     }
+
     if(speed.value < 3) {
         speed.value = <1|2|3>(speed.value + 1);
     } else speed.value = 1;
