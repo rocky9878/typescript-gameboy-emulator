@@ -1,34 +1,48 @@
-import inertia from '@inertiajs/vite';
-import { wayfinder } from '@laravel/vite-plugin-wayfinder';
+import inertia from "@inertiajs/vite";
+import { wayfinder } from "@laravel/vite-plugin-wayfinder";
 import tailwindcss from '@tailwindcss/vite';
 import vue from '@vitejs/plugin-vue';
 import laravel from 'laravel-vite-plugin';
-import { bunny } from 'laravel-vite-plugin/fonts';
-import { defineConfig } from 'vite';
+import { defineConfig, loadEnv } from 'vite';
 
-export default defineConfig({
-    plugins: [
-        laravel({
-            input: ['resources/css/app.css', 'resources/js/app.ts'],
-            refresh: true,
-            fonts: [
-                bunny('Instrument Sans', {
-                    weights: [400, 500, 600],
-                }),
-            ],
-        }),
-        inertia(),
-        tailwindcss(),
-        vue({
-            template: {
-                transformAssetUrls: {
-                    base: null,
-                    includeAbsolute: false,
-                },
+
+export default defineConfig(({ mode }) => {
+    const env = loadEnv(mode, process.cwd(), '');
+
+    return {
+        server: {
+            host: '0.0.0.0',
+            hmr: {
+                host: '127.0.0.1',
             },
-        }),
-        wayfinder({
-            formVariants: true,
-        }),
-    ],
+        },
+        ssr: {
+            optimizeDeps: {
+                include: ['lodash/omit'],
+            },
+            noExternal: [
+                'lodash/omit',
+            ],
+        },
+        plugins: [
+            laravel({
+                input: ['resources/js/app.ts' , 'resources/css/app.css'],
+                refresh: true,
+            }),
+            vue({
+                template: {
+                    transformAssetUrls: {
+                        base: null,
+                        includeAbsolute: false,
+                    },
+                },
+            }),
+            inertia(),
+            tailwindcss(),
+            wayfinder({
+                formVariants: true,
+                command: env.WAYFINDER_COMMAND
+            }),
+        ],
+    }
 });
