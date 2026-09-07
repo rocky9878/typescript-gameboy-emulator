@@ -3,19 +3,16 @@ import type { ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
 import { u16, u8 } from '@/emulator';
+import { InertiaLinkProps } from '@inertiajs/vue3';
 
 export function cn(...inputs: ClassValue[]) {
     return twMerge(clsx(inputs));
 }
 
-// These run on nearly every ADD/SUB/INC/DEC the CPU executes - often enough, at real
-// Game Boy speed, that a fresh [value, overflow] tuple allocated per call becomes real
-// GC pressure and was eating into the CPU's already razor-thin real-time performance
-// margin (measured at ~0.9965x realtime on Pokemon Red, i.e. barely unable to keep up -
-// any jitter pushes it under 1x, which starves the audio pipeline and sounds like
-// crackling). Packing the overflow flag into an unused high bit of the same number
-// instead avoids the allocation entirely; unpack the value with the existing u8()/u16()
-// (their masking already discards the flag bit) and the flag with overflowed().
+export function toUrl(href: NonNullable<InertiaLinkProps['href']>) {
+    return typeof href === 'string' ? href : href?.url;
+}
+
 const OVERFLOW_FLAG = 0x10000; // bit 16 - above any 8-bit or 16-bit result
 
 export function overflowed(packed: number): boolean {

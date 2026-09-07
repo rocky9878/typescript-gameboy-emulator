@@ -13,7 +13,7 @@ class SaveStateController extends Controller
      */
     public function index(Request $request)
     {
-        $saveStates = $request->user() ? SaveStateResource::make($request->user()->saveStates()) : null;
+        $saveStates = $request->user() ? null : null;
 
         return inertia('Emulator', ['saveStates' => $saveStates]);
     }

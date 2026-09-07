@@ -1365,10 +1365,19 @@ export function setCpuSpeed(speed: 1|2|3) {
     runningApu?.setSpeed(speed);
 }
 
-// Returns the running CPU instance so callers (e.g. the Vue page) can reach
-// getSaveState()/setSaveState() - and anything else on CPU - without this function
-// needing its own save/load wrapper API.
-export async function run(canvas?: HTMLCanvasElement): Promise<CPU> {
+export type RunHandle = {
+    // The running CPU instance, so callers (e.g. the Vue page) can reach
+    // getSaveState()/setSaveState() - and anything else on CPU - without this
+    // function needing its own save/load wrapper API.
+    cpu: CPU;
+    // Tears down everything run() started: the rAF loop, the window/document event
+    // listeners, and the AudioContext. Must be called when the emulator is removed
+    // from the page (SPA navigation), otherwise the key listeners keep calling
+    // preventDefault() on Z/X/Enter/arrows and swallow them from other pages.
+    dispose: () => void;
+};
+
+export async function run(canvas?: HTMLCanvasElement): Promise<RunHandle> {
     const cpu = new CPU();
     const response = await fetch('/red.gb');
     const buffer = await response.arrayBuffer();
@@ -1418,7 +1427,7 @@ export async function run(canvas?: HTMLCanvasElement): Promise<CPU> {
     // doesn't know that on its own, and keeps playing out whatever's already scheduled
     // ahead of it. Explicitly suspending it (and cutting off anything still queued) keeps
     // audio in lockstep with the emulation instead of trailing behind or overlapping it.
-    document.addEventListener('visibilitychange', () => {
+    const onVisibilityChange = () => {
         if (document.hidden) {
             for (const source of activeSources) source.stop();
             activeSources.clear();
@@ -1428,9 +1437,10 @@ export async function run(canvas?: HTMLCanvasElement): Promise<CPU> {
         } else {
             void audioCtx.resume();
         }
-    });
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
 
-    window.addEventListener('keydown', (e) => {
+    const onKeyDown = (e: KeyboardEvent) => {
         void audioCtx.resume(); // browsers require a user gesture before audio can play
         const button = KEY_TO_BUTTON[e.code];
 
@@ -1438,15 +1448,17 @@ export async function run(canvas?: HTMLCanvasElement): Promise<CPU> {
             e.preventDefault();
             cpu.bus.joypad.setButton(button, true);
         }
-    });
-    window.addEventListener('keyup', (e) => {
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
         const button = KEY_TO_BUTTON[e.code];
 
         if (button) {
             e.preventDefault();
             cpu.bus.joypad.setButton(button, false);
         }
-    });
+    };
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
 
     const ctx = canvas?.getContext('2d');
 
@@ -1468,8 +1480,12 @@ export async function run(canvas?: HTMLCanvasElement): Promise<CPU> {
     }
 
     let lastTickTime = performance.now();
+    let rafId = 0;
+    let disposed = false;
 
     function tick() {
+        if (disposed) return;
+
         const now = performance.now();
         // Cap the catch-up window (e.g. after the tab was backgrounded) so a long gap
         // doesn't cause a huge cycle burst on the next visible frame.
@@ -1494,7 +1510,7 @@ export async function run(canvas?: HTMLCanvasElement): Promise<CPU> {
             // Drop samples generated pre-resume instead; there's nothing worth hearing yet.
             pendingSamples.length = 0;
             nextChunkTime = audioCtx.currentTime + SCHEDULE_LEAD;
-            requestAnimationFrame(tick);
+            rafId = requestAnimationFrame(tick);
 
             return;
         }
@@ -1535,9 +1551,26 @@ export async function run(canvas?: HTMLCanvasElement): Promise<CPU> {
             nextChunkTime += audioBuffer.duration;
         }
 
-        requestAnimationFrame(tick);
+        rafId = requestAnimationFrame(tick);
     }
-    requestAnimationFrame(tick);
+    rafId = requestAnimationFrame(tick);
 
-    return cpu;
+    const dispose = () => {
+        if (disposed) return;
+        disposed = true;
+
+        cancelAnimationFrame(rafId);
+        window.removeEventListener('keydown', onKeyDown);
+        window.removeEventListener('keyup', onKeyUp);
+        document.removeEventListener('visibilitychange', onVisibilityChange);
+
+        for (const source of activeSources) source.stop();
+        activeSources.clear();
+        pendingSamples.length = 0;
+
+        if (runningApu === cpu.bus.apu) runningApu = null;
+        void audioCtx.close();
+    };
+
+    return { cpu, dispose };
 }

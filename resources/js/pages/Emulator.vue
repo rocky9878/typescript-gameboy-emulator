@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { onMounted, ref, useTemplateRef } from 'vue';
+import { onMounted, onUnmounted, ref, useTemplateRef } from 'vue';
 import { run, setCpuSpeed } from '@/emulator/CPU';
 import type { CPU } from '@/emulator/CPU';
 import type { JoypadButton } from '@/emulator/joypad';
-import { ChevronsRight, HardDriveDownload, HardDriveUpload, Save, SavePen, Upload } from '@lucide/vue';
+import { ChevronsRight, HardDriveDownload, HardDriveUpload, Upload } from '@lucide/vue';
 import DropdownMenu from '@/components/ui/dropdown-menu/DropdownMenu.vue';
 import DropdownMenuTrigger from '@/components/ui/dropdown-menu/DropdownMenuTrigger.vue';
 import { DropdownMenuContent } from 'reka-ui';
@@ -15,11 +15,25 @@ const canvas = useTemplateRef<HTMLCanvasElement>('canvas');
 // be triggered from outside CPU.ts - e.g. UI buttons or devtools - instead of only from
 // code that has direct access to the module-internal instance.
 let cpu: CPU | undefined;
+let disposeEmulator: (() => void) | undefined;
+let unmounted = false;
 const speed = ref<1|2|3>(1);
 const state = ref<string | null>(null);
 
 onMounted(async () => {
-    cpu = await run(canvas.value ?? undefined);
+    const handle = await run(canvas.value ?? undefined);
+    cpu = handle.cpu;
+    disposeEmulator = handle.dispose;
+
+    // Navigated away before the ROM finished loading - tear down immediately.
+    if (unmounted) {
+        disposeEmulator();
+    }
+});
+
+onUnmounted(() => {
+    unmounted = true;
+    disposeEmulator?.();
 });
 
 async function saveState(): Promise<string> {
@@ -85,8 +99,8 @@ function release(button: JoypadButton) {
 </script>
 
 <template>
-    <div class="max-h-screen overflow-hidden">
-        <div class="flex gap-2 flex-col h-screen w-full items-center justify-center bg-neutral-900 md:scale-150">
+    <div class="overflow-hidden">
+        <div class="flex gap-2 flex-col min-h-[calc(100vh-80px)] w-full items-center justify-center md:scale-150">
             <div class="rounded-full flex text-blue-600 bg-gray-100 gap-2">
                 <div title="Upload ROM" class="cursor-pointer flex justify-center items-center size-10 relative rounded-full"><Upload/></div>
                 <div title="Save State" class="cursor-pointer flex justify-center items-center size-10 relative rounded-full" @click="onSaveClick">
