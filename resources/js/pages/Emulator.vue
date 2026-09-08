@@ -195,7 +195,7 @@ function handleUpload(event: Event) {
                 <div title="Load State" class="flex justify-center items-center size-10 relative rounded-full">
                     <DropdownMenu>
                         <DropdownMenuTrigger :class="{ 'pointer-events-none': !rom }"  class="mx-auto h-full cursor-pointer"><HardDriveDownload/></DropdownMenuTrigger>
-                        <DropdownMenuContent class="bg-white relative z-10 grid grid-cols-3 gap-1 p-1 rounded" v-if="rom">
+                        <DropdownMenuContent class="bg-white relative z-10 grid grid-cols-3 gap-1 p-1 rounded max-w-screen" v-if="rom">
                             <DropdownMenuLabel class="col-span-3 text-center">Load state</DropdownMenuLabel>
                             <DropdownMenuItem class="col-span-3 border" v-if="user">Autosave
                                 <p v-if="saveStates?.[10]" class="w-full mb-1 text-right">{{ saveStates?.[10].rom_name }} - {{ convertTZ(saveStates?.[10].created_at) }}</p>
@@ -215,7 +215,7 @@ function handleUpload(event: Event) {
                 <div title="Save State" class="flex justify-center items-center size-10 relative rounded-full">
                     <DropdownMenu>
                         <DropdownMenuTrigger :class="{ 'pointer-events-none': !rom }" class="mx-auto h-full cursor-pointer"><HardDriveUpload/></DropdownMenuTrigger>
-                        <DropdownMenuContent class="bg-white relative z-10 grid grid-cols-3 gap-1 p-1 rounded" v-if="rom">
+                        <DropdownMenuContent class="bg-white relative z-10 grid grid-cols-3 gap-1 p-1 rounded max-w-screen" v-if="rom">
                             <DropdownMenuLabel class="col-span-3 text-center">Save state</DropdownMenuLabel>
                             <DropdownMenuItem v-for="index in 9" :key="index" class="border flex justify-center align-middle text-center" v-if="user" @click="onSaveClick(index)">
                                 <div v-if="saveStates?.[index]">
