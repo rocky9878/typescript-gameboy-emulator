@@ -477,11 +477,8 @@ export class Apu {
 
     constructor(sampleRate: number = 44100) {
         this.sampleRate = sampleRate;
+        // Always 1x hardware rate; fast-forward is handled by resampling in CPU.ts.
         this.cyclesPerSample = CPU_SPEED / sampleRate;
-    }
-
-    setSpeed(speed: number): void {
-        this.cyclesPerSample = (CPU_SPEED * speed) / this.sampleRate;
     }
 
     // Length is clocked on even frame-sequencer steps (256Hz out of the 512Hz sequencer).

@@ -1357,36 +1357,28 @@ const KEY_TO_BUTTON: Record<string, JoypadButton> = {
     ShiftRight: 'select',
 };
 
-// Real Game Boy clock: 4194304 T-cycles/second (154 scanlines * 456 dots * 59.7275Hz).
-// requestAnimationFrame fires at the DISPLAY's refresh rate (commonly an exact 60Hz),
-// which is ~0.45% faster than a real Game Boy's 59.7275Hz - running a fixed
-// cycles-per-callback amount assumes those rates match, so audio (scheduled ahead in
-// AudioContext time based on cycles run) very slowly races ahead of real wall-clock
-// time. Pacing by *actual elapsed time* instead keeps cycle advancement - and thus
-// audio scheduling - locked to the same real-time clock the AudioContext itself uses,
-// so the drift can't accumulate regardless of the display's true refresh rate.
-let CPU_SPEED = 4194304;
-let runningApu: Apu | null = null;
+// Real Game Boy clock: 4194304 T-cycles/second. tick() paces by actual elapsed wall time
+// rather than a fixed per-frame budget so audio scheduling can't drift against the display's
+// true refresh rate (rAF's 60Hz is ~0.45% fast vs the GB's 59.7275Hz).
+const BASE_CPU_SPEED = 4194304;
+let CPU_SPEED = BASE_CPU_SPEED;
 const audioCtx = new AudioContext();
 const gain = audioCtx.createGain();
 gain.connect(audioCtx.destination);
 
+// Mobile rAF is throttled/jittery and stops when backgrounded - the audio pipeline needs
+// more lead and wider drift tolerance there.
+const IS_TOUCH = typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches === true;
+
 export function setCpuSpeed(speed: 1|2|3) {
-    CPU_SPEED = 4194304 * speed;
-    // Keep the APU's sample spacing in step with the new cycle rate, otherwise it produces
-    // samples faster than the audio backend drains them and playback latency runs away.
-    runningApu?.setSpeed(speed);
+    // APU is unaffected - it always samples at 1x; run()'s tick loop resamples the surplus.
+    CPU_SPEED = BASE_CPU_SPEED * speed;
 }
 
 export type RunHandle = {
-    // The running CPU instance, so callers (e.g. the Vue page) can reach
-    // getSaveState()/setSaveState() - and anything else on CPU - without this
-    // function needing its own save/load wrapper API.
     cpu: CPU;
-    // Tears down everything run() started: the rAF loop, the window/document event
-    // listeners, and the AudioContext. Must be called when the emulator is removed
-    // from the page (SPA navigation), otherwise the key listeners keep calling
-    // preventDefault() on Z/X/Enter/arrows and swallow them from other pages.
+    // Tears down the rAF loop, event listeners and AudioContext. Must run on SPA navigation
+    // away, or the key listeners keep swallowing Z/X/Enter/arrows on other pages.
     dispose: () => void;
 };
 
@@ -1401,59 +1393,72 @@ export async function run(rom: string, canvas?: HTMLCanvasElement): Promise<RunH
     if (bytes[0x143] === 0xc0) cpu.register.a = u8(0x11); // see CPU.init()'s comment
 
     cpu.bus.apu = new Apu(audioCtx.sampleRate);
-    runningApu = cpu.bus.apu;
+    const sampleRate = audioCtx.sampleRate;
 
-    // How far ahead of currentTime the first chunk in a fresh run of chunks is scheduled.
-    // Scheduling a buffer at (or a millisecond after) currentTime routinely underruns - the
-    // browser hasn't finished wiring the node into the graph before its start time passes -
-    // which is the crackle heard at ROM startup and after any resync. One chunk of lead
-    // absorbs that without adding meaningful latency.
-    const SCHEDULE_LEAD = 0.06;
-    // If scheduled audio ever gets this far ahead of playback, throw the backlog away and
-    // resync rather than letting the gap grow forever (mobile rAF hitching, a speed change
-    // mid-stream, or a tab that was briefly throttled all cause this).
-    const MAX_LATENCY = 0.25;
+    // Lead time before the first scheduled chunk: scheduling at ~currentTime routinely
+    // underruns before the node is wired into the graph (the startup/resync crackle).
+    const SCHEDULE_LEAD = IS_TOUCH ? 0.16 : 0.06;
+    // Drop the backlog and resync if scheduled audio drifts this far ahead of playback.
+    const MAX_LATENCY = IS_TOUCH ? 0.6 : 0.25;
     let nextChunkTime = audioCtx.currentTime + SCHEDULE_LEAD;
-    // Samples generated per requestAnimationFrame tick vary in count now that cycle
-    // advancement is paced by real elapsed time rather than a fixed cycles-per-callback
-    // amount (see the CPU_SPEED pacing below) - scheduling a differently-sized
-    // AudioBufferSourceNode every tick produces audible clicks/warble at the irregular
-    // chunk boundaries. Queuing samples and only emitting them in fixed-size chunks keeps
-    // every scheduled buffer's duration identical, regardless of how many samples any one
-    // tick happened to produce.
-    const CHUNK_FRAMES = Math.round(audioCtx.sampleRate * 0.02); // 20ms chunks
-    const pendingSamples: number[] = [];
+    // Emit audio in fixed-size chunks - per-tick sample counts vary (elapsed-time pacing),
+    // and variable-length buffers click at the boundaries.
+    const CHUNK_FRAMES = Math.round(sampleRate * 0.02); // 20ms chunks
 
-    // Tracks chunks that have been scheduled via source.start() but haven't finished
-    // playing yet, so a visibility change can stop them outright instead of letting them
-    // linger. Without this, hiding the tab left already-scheduled sources sitting in the
-    // graph at their original AudioContext times; suspend()/resume() is async and doesn't
-    // resolve before the next tick() runs, so tick()'s own catch-up logic would start
-    // scheduling a *second*, freshly-timed batch of chunks that overlapped the still-
-    // pending old ones on resume - two unrelated buffers playing over each other, which is
-    // exactly what crackling from overlapping/garbled samples sounds like.
+    // The APU always samples at 1x. During fast-forward the CPU runs Nx the cycles/sec so the
+    // APU emits ~Nx the samples; the resampler reads this raw stream (interleaved stereo) at a
+    // variable stride and writes exactly enough output frames for real time, so fast-forward
+    // audio speeds up at native pitch instead of pitching up. pendingSamples is the resampled
+    // output-rate stream the chunk scheduler drains.
+    const rawSamples: number[] = [];
+    const pendingSamples: number[] = [];
+    // resamplePos: fractional read index into rawSamples (frames). ratioEma: smoothed input
+    // frames consumed per output frame (~= speed actually achieved). outputDue: output frames
+    // owed for elapsed real time.
+    let resamplePos = 0;
+    let ratioEma = 1;
+    let outputDue = 0;
+    let lastCpuSpeed = CPU_SPEED;
+
+    // Scheduled-but-not-finished sources, so a visibility change can stop them instead of
+    // leaving them to overlap a freshly-timed batch on resume (garbled crackle).
     const activeSources = new Set<AudioBufferSourceNode>();
 
-    // requestAnimationFrame already stops firing when the tab is hidden, so CPU stepping
-    // (paced by tick()'s own rAF loop) implicitly pauses on its own - but the AudioContext
-    // doesn't know that on its own, and keeps playing out whatever's already scheduled
-    // ahead of it. Explicitly suspending it (and cutting off anything still queued) keeps
-    // audio in lockstep with the emulation instead of trailing behind or overlapping it.
+    const resetAudioQueues = () => {
+        rawSamples.length = 0;
+        pendingSamples.length = 0;
+        resamplePos = 0;
+        outputDue = 0;
+        nextChunkTime = audioCtx.currentTime + SCHEDULE_LEAD;
+    };
+    const suspendAudio = () => {
+        for (const source of activeSources) source.stop();
+        activeSources.clear();
+        resetAudioQueues();
+        void audioCtx.suspend();
+    };
     const onVisibilityChange = () => {
         if (document.hidden) {
-            for (const source of activeSources) source.stop();
-            activeSources.clear();
-            pendingSamples.length = 0;
-            nextChunkTime = audioCtx.currentTime + SCHEDULE_LEAD;
-            void audioCtx.suspend();
+            suspendAudio();
         } else {
             void audioCtx.resume();
         }
     };
     document.addEventListener('visibilitychange', onVisibilityChange);
+    // pagehide/pageshow are what fire on mobile backgrounding/screen-lock (visibilitychange
+    // is unreliable there).
+    const onPageHide = () => suspendAudio();
+    const onPageShow = () => { void audioCtx.resume(); };
+    window.addEventListener('pagehide', onPageHide);
+    window.addEventListener('pageshow', onPageShow);
+
+    // Synthetic KeyboardEvents from the on-screen D-pad don't count as a user gesture, so
+    // resume() from onKeyDown fails on mobile - a real pointerdown does count.
+    const onPointerDown = () => { void audioCtx.resume(); };
+    window.addEventListener('pointerdown', onPointerDown);
 
     const onKeyDown = (e: KeyboardEvent) => {
-        void audioCtx.resume(); // browsers require a user gesture before audio can play
+        void audioCtx.resume();
         const button = KEY_TO_BUTTON[e.code];
 
         if (button) {
@@ -1495,48 +1500,109 @@ export async function run(rom: string, canvas?: HTMLCanvasElement): Promise<RunH
     let rafId = 0;
     let disposed = false;
 
+    const RESAMPLE_TARGET_BACKLOG = sampleRate * (IS_TOUCH ? 0.05 : 0.03);
+
     function tick() {
         if (disposed) return;
 
         const now = performance.now();
-        // Cap the catch-up window (e.g. after the tab was backgrounded) so a long gap
-        // doesn't cause a huge cycle burst on the next visible frame.
+        // Cap the catch-up window so a long gap (backgrounded tab) can't burst on resume.
         const elapsedSeconds = Math.min((now - lastTickTime) / 1000, 0.1);
         lastTickTime = now;
 
         const target = cpu.cycleSum + elapsedSeconds * CPU_SPEED;
 
+        // Wall-clock ceiling on the step burst: a device that can't sustain the requested
+        // fast-forward speed would otherwise block the main thread every frame and spiral
+        // into a freeze. Bailing just runs fast-forward slower; the resampler adapts.
+        const enforceDeadline = CPU_SPEED > BASE_CPU_SPEED;
+        const deadline = now + (IS_TOUCH ? 12 : 18);
+        let stepGuard = 0;
         while (cpu.cycleSum < target) {
             cpu.step();
+            // performance.now() per step is too costly - sample it periodically.
+            if (enforceDeadline && (stepGuard++ & 0x1fff) === 0 && performance.now() >= deadline) {
+                break;
+            }
         }
 
         const samples = cpu.bus.apu.drainSamples();
 
         if (audioCtx.state !== 'running') {
-            // The AudioContext starts (and stays) suspended until a user gesture resumes it,
-            // but the CPU has been running - and generating samples - since mount. Queuing
-            // those samples anyway would build a backlog timestamped against a currentTime
-            // that isn't advancing yet, so once resumed, that whole backlog has to play out
-            // before newly-generated audio (e.g. the very button press that resumed it) is
-            // heard - a permanent delay equal to however long the page sat idle first.
-            // Drop samples generated pre-resume instead; there's nothing worth hearing yet.
-            pendingSamples.length = 0;
-            nextChunkTime = audioCtx.currentTime + SCHEDULE_LEAD;
+            // Suspended (pre-gesture / backgrounded): drop the backlog so it doesn't all
+            // play out on resume before live audio is heard.
+            resetAudioQueues();
             rafId = requestAnimationFrame(tick);
 
             return;
         }
 
-        for (let i = 0; i < samples.length; i++) pendingSamples.push(samples[i]);
+        if (CPU_SPEED === BASE_CPU_SPEED) {
+            // Normal speed: APU rate already matches the device - pass through untouched so
+            // the resampler can't colour pitch.
+            if (rawSamples.length > 0) {
+                rawSamples.length = 0;
+                resamplePos = 0;
+                outputDue = 0;
+            }
+            for (let i = 0; i < samples.length; i++) pendingSamples.push(samples[i]);
+        } else {
+            // Fast-forward: resample the surplus. Seed ratio at the nominal multiplier on a
+            // speed change so it doesn't have to climb from 1x; measurement corrects it
+            // toward the real rate (which may be < N if the device can't keep up).
+            if (CPU_SPEED !== lastCpuSpeed) {
+                ratioEma = CPU_SPEED / BASE_CPU_SPEED;
+            }
 
-        // Playback has fallen too far behind generation - drop the backlog and resync so the
-        // gap can't keep growing. Covers a runaway queue from mobile hitching or a mid-stream
-        // speed change faster than setSpeed() can rebalance it.
+            for (let i = 0; i < samples.length; i++) rawSamples.push(samples[i]);
+
+            if (elapsedSeconds > 0.001 && samples.length > 0) {
+                const measuredRatio = samples.length / 2 / (elapsedSeconds * sampleRate);
+                ratioEma += (measuredRatio - ratioEma) * 0.05;
+            }
+            outputDue = Math.min(outputDue + elapsedSeconds * sampleRate, sampleRate * 0.25);
+
+            // Hold the raw backlog near target by flexing frame count (tempo, inaudible),
+            // not the resample ratio (pitch).
+            const rawFrames = rawSamples.length / 2;
+            outputDue = Math.max(0, outputDue + (rawFrames - RESAMPLE_TARGET_BACKLOG) * 0.002);
+
+            const ratio = Math.max(0.05, Math.min(16, ratioEma));
+            let produced = 0;
+            const wanted = Math.floor(outputDue);
+            for (; produced < wanted; produced++) {
+                const base = Math.floor(resamplePos);
+
+                if ((base + 1) * 2 + 1 >= rawSamples.length) {
+                    break; // out of input
+                }
+
+                const frac = resamplePos - base;
+                const i = base * 2;
+                pendingSamples.push(
+                    rawSamples[i] * (1 - frac) + rawSamples[i + 2] * frac,
+                    rawSamples[i + 1] * (1 - frac) + rawSamples[i + 3] * frac,
+                );
+                resamplePos += ratio;
+            }
+            outputDue -= produced;
+
+            const consumed = Math.floor(resamplePos);
+            if (consumed > 0) {
+                rawSamples.splice(0, consumed * 2);
+                resamplePos -= consumed;
+            }
+            if (rawSamples.length > sampleRate * 2) {
+                rawSamples.splice(0, rawSamples.length - Math.floor(sampleRate));
+            }
+        }
+        lastCpuSpeed = CPU_SPEED;
+
+        // Scheduled audio drifted too far ahead of playback - drop the backlog and resync.
         if (nextChunkTime - audioCtx.currentTime > MAX_LATENCY) {
             for (const source of activeSources) source.stop();
             activeSources.clear();
-            pendingSamples.length = 0;
-            nextChunkTime = audioCtx.currentTime + SCHEDULE_LEAD;
+            resetAudioQueues();
         }
 
         while (pendingSamples.length >= CHUNK_FRAMES * 2) {
@@ -1554,7 +1620,7 @@ export async function run(rom: string, canvas?: HTMLCanvasElement): Promise<RunH
             source.buffer = audioBuffer;
             source.connect(gain);
 
-            // Fell behind (e.g. backgrounded tab)? Don't let queued audio pile up and play back-to-back late.
+            // Fell behind? Don't schedule in the past.
             if (nextChunkTime < audioCtx.currentTime) nextChunkTime = audioCtx.currentTime + SCHEDULE_LEAD;
 
             source.start(nextChunkTime);
@@ -1574,13 +1640,16 @@ export async function run(rom: string, canvas?: HTMLCanvasElement): Promise<RunH
         cancelAnimationFrame(rafId);
         window.removeEventListener('keydown', onKeyDown);
         window.removeEventListener('keyup', onKeyUp);
+        window.removeEventListener('pointerdown', onPointerDown);
+        window.removeEventListener('pagehide', onPageHide);
+        window.removeEventListener('pageshow', onPageShow);
         document.removeEventListener('visibilitychange', onVisibilityChange);
 
         for (const source of activeSources) source.stop();
         activeSources.clear();
+        rawSamples.length = 0;
         pendingSamples.length = 0;
 
-        if (runningApu === cpu.bus.apu) runningApu = null;
         void audioCtx.close();
     };
 

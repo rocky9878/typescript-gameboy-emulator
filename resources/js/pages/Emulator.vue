@@ -34,16 +34,24 @@ const rom = ref<string>('');
 const fileInput = useTemplateRef('romInput');
 const volume = ref<number>(Number(localStorage.getItem('emulator:volume') ?? '0.5'));
 
-window.onbeforeunload = confirmExit;
 function confirmExit() {
-    return "Please save. Unsaved progress will be lost.";
+    return "Unsaved progress will be lost on page exit.";
 }
+window.onbeforeunload = confirmExit;
+
+// Unsubscribe on unmount - otherwise this global listener keeps prompting on every later
+// Inertia visit (e.g. the login/register submit button).
+const stopBeforeNavigate = router.on('before', () => {
+    return props.user ? true : confirm("Unsaved progress will be lost on page exit.");
+});
 
 onUnmounted(() => {
     unmounted = true;
     rom.value = '';
     clearInterval(autosaveInterval);
     disposeEmulator?.();
+    stopBeforeNavigate();
+    window.onbeforeunload = null;
 });
 
 async function saveState(): Promise<string> {
