@@ -34,6 +34,11 @@ const rom = ref<string>('');
 const fileInput = useTemplateRef('romInput');
 const volume = ref<number>(Number(localStorage.getItem('emulator:volume') ?? '0.5'));
 
+window.onbeforeunload = confirmExit;
+function confirmExit() {
+    return "Please save. Unsaved progress will be lost.";
+}
+
 onUnmounted(() => {
     unmounted = true;
     rom.value = '';
