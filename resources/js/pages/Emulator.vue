@@ -30,13 +30,13 @@ let disposeEmulator: (() => void) | undefined;
 let unmounted = false;
 let autosaveInterval = <number|undefined>undefined;
 const speed = ref<1|2|3>(1);
-const romLoaded = ref<Boolean>(false);
+const rom = ref<string>('');
 const fileInput = useTemplateRef('romInput');
 const volume = ref<number>(Number(localStorage.getItem('emulator:volume') ?? '0.5'));
 
 onUnmounted(() => {
     unmounted = true;
-    romLoaded.value = false;
+    rom.value = '';
     clearInterval(autosaveInterval);
     disposeEmulator?.();
 });
@@ -63,7 +63,7 @@ async function onSaveClick(slot: number) {
 
     axios.post(store.url(), {
         'save_data': state,
-        'rom_name': 'test',
+        'rom_name': rom.value,
         'slot': slot,
     }).then(() => {
         router.reload({
@@ -79,12 +79,13 @@ async function onLoadClick(slot: number) {
 }
 
 async function loadRom() {
-    const handle = await run('/red.gb', canvas.value ?? undefined);
+    if(rom.value) return;
+    const handle = await run('/Pokémon_red.gb', canvas.value ?? undefined);
     cpu = handle.cpu;
     disposeEmulator = handle.dispose;
     cpu.setVolume(volume.value);
 
-    romLoaded.value = true;
+    rom.value = 'Pokémon_red.gb'.substring(0, 'Pokémon_red.gb'.length - 3);
 
     autosaveInterval = setInterval(() => {
         onSaveClick(10);
@@ -142,7 +143,7 @@ function convertTZ(dateTime: string) {
 
 async function downloadState() {
     const state = await saveState();
-    const file = new File([state], 'romname'+'Save.bin');
+    const file = new File([state], rom.value+'_State.bin');
 
     const link = document.createElement('a');
     link.style.display = 'none';
@@ -159,14 +160,16 @@ async function downloadState() {
     }, 0);
 }
 
-function promptStateUpload() {
-    fileInput.value?.click();
+function promptUpload(type: 'rom'|'state') {
+    if(!fileInput.value) return;
+    fileInput.value.click();
+    fileInput.value.ariaLabel = type;
 }
 
 function handleUpload(event: Event) {
     const file = (event.target as HTMLInputElement)?.files?.[0];
     if(!file) return;
-    file.text().then((value) => loadState(value));
+    if(fileInput.value?.ariaLabel === 'state') file.text().then((value) => loadState(value));
 }
 
 </script>
@@ -178,8 +181,8 @@ function handleUpload(event: Event) {
                 <div title="Upload ROM" class="cursor-pointer flex justify-center items-center size-10 relative rounded-full" @click="loadRom()"><Upload/></div>
                 <div title="Load State" class="flex justify-center items-center size-10 relative rounded-full">
                     <DropdownMenu>
-                        <DropdownMenuTrigger :class="{ 'cursor-not-allowed!': !romLoaded }"  class="mx-auto h-full cursor-pointer"><HardDriveDownload/></DropdownMenuTrigger>
-                        <DropdownMenuContent class="bg-white relative z-10 grid grid-cols-3 gap-1 p-1 rounded" v-if="romLoaded">
+                        <DropdownMenuTrigger :class="{ 'pointer-events-none': !rom }"  class="mx-auto h-full cursor-pointer"><HardDriveDownload/></DropdownMenuTrigger>
+                        <DropdownMenuContent class="bg-white relative z-10 grid grid-cols-3 gap-1 p-1 rounded" v-if="rom">
                             <DropdownMenuLabel class="col-span-3 text-center">Load state</DropdownMenuLabel>
                             <DropdownMenuItem class="col-span-3 border" v-if="user">Autosave
                                 <p v-if="saveStates?.[10]" class="w-full mb-1 text-right">{{ saveStates?.[10].rom_name }} - {{ convertTZ(saveStates?.[10].created_at) }}</p>
@@ -192,14 +195,14 @@ function handleUpload(event: Event) {
                                 </div>
                                 <p v-else>empty</p>
                             </DropdownMenuItem>
-                            <DropdownMenuItem class="col-span-3 text-center block whitespace-nowrap" @click="promptStateUpload()">Import from file</DropdownMenuItem>
+                            <DropdownMenuItem class="col-span-3 text-center block whitespace-nowrap" @click="promptUpload('state')">Import from file</DropdownMenuItem>
                         </DropdownMenuContent>
                     </DropdownMenu>
                 </div>
                 <div title="Save State" class="flex justify-center items-center size-10 relative rounded-full">
                     <DropdownMenu>
-                        <DropdownMenuTrigger :class="{ 'cursor-not-allowed!': !romLoaded }" class="mx-auto h-full cursor-pointer"><HardDriveUpload/></DropdownMenuTrigger>
-                        <DropdownMenuContent class="bg-white relative z-10 grid grid-cols-3 gap-1 p-1 rounded" v-if="romLoaded">
+                        <DropdownMenuTrigger :class="{ 'pointer-events-none': !rom }" class="mx-auto h-full cursor-pointer"><HardDriveUpload/></DropdownMenuTrigger>
+                        <DropdownMenuContent class="bg-white relative z-10 grid grid-cols-3 gap-1 p-1 rounded" v-if="rom">
                             <DropdownMenuLabel class="col-span-3 text-center">Save state</DropdownMenuLabel>
                             <DropdownMenuItem v-for="index in 9" :key="index" class="border flex justify-center align-middle text-center" v-if="user" @click="onSaveClick(index)">
                                 <div v-if="saveStates?.[index]">
