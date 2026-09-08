@@ -195,7 +195,7 @@ function handleUpload(event: Event) {
                                 </div>
                                 <p v-else>empty</p>
                             </DropdownMenuItem>
-                            <DropdownMenuItem class="col-span-3 text-center block whitespace-nowrap" @click="promptUpload('state')">Import from file</DropdownMenuItem>
+                            <DropdownMenuItem class="col-span-3 text-center block whitespace-nowrap" @click="promptUpload('state')">Import from file<br/><p class="text-[8px] text-gray-400" v-if="!user">log in to save to the server</p></DropdownMenuItem>
                         </DropdownMenuContent>
                     </DropdownMenu>
                 </div>
@@ -211,7 +211,7 @@ function handleUpload(event: Event) {
                                 </div>
                                 <p v-else>empty</p>
                             </DropdownMenuItem>
-                            <DropdownMenuItem class="col-span-3 text-center block whitespace-nowrap" @click="downloadState()">Export to file</DropdownMenuItem>
+                            <DropdownMenuItem class="col-span-3 text-center block whitespace-nowrap" @click="downloadState()">Export to file<br/><p class="text-[8px] text-gray-400" v-if="!user">log in to save to the server</p></DropdownMenuItem>
                         </DropdownMenuContent>
                     </DropdownMenu>
                 </div>
