@@ -1,12 +1,23 @@
 <script setup lang="ts">
-import { ChevronsRight, HardDriveDownload, HardDriveUpload, Upload } from '@lucide/vue';
+import { ChevronsRight, HardDriveDownload, HardDriveUpload, Upload, Volume2 } from '@lucide/vue';
 import { DropdownMenuContent } from 'reka-ui';
 import { onMounted, onUnmounted, ref, useTemplateRef } from 'vue';
-import DropdownMenu from '@/components/ui/dropdown-menu/DropdownMenu.vue';
-import DropdownMenuTrigger from '@/components/ui/dropdown-menu/DropdownMenuTrigger.vue';
 import { run, setCpuSpeed } from '@/emulator/CPU';
 import type { CPU } from '@/emulator/CPU';
 import type { JoypadButton } from '@/emulator/joypad';
+import { SaveStateMap, User } from '@/types';
+import { DropdownMenuItem, DropdownMenuTrigger, DropdownMenu } from '@/components/ui/dropdown-menu';
+import DropdownMenuLabel from '@/components/ui/dropdown-menu/DropdownMenuLabel.vue';
+import axios from 'axios';
+import { store } from '@/routes';
+import { router } from '@inertiajs/vue3';
+
+interface Props {
+    user?: User;
+    saveStates: SaveStateMap;
+}
+
+const props = defineProps<Props>();
 
 const canvas = useTemplateRef<HTMLCanvasElement>('canvas');
 
@@ -17,22 +28,16 @@ const canvas = useTemplateRef<HTMLCanvasElement>('canvas');
 let cpu: CPU | undefined;
 let disposeEmulator: (() => void) | undefined;
 let unmounted = false;
+let autosaveInterval = <number|undefined>undefined;
 const speed = ref<1|2|3>(1);
-const state = ref<string | null>(null);
-
-onMounted(async () => {
-    const handle = await run(canvas.value ?? undefined);
-    cpu = handle.cpu;
-    disposeEmulator = handle.dispose;
-
-    // Navigated away before the ROM finished loading - tear down immediately.
-    if (unmounted) {
-        disposeEmulator();
-    }
-});
+const romLoaded = ref<Boolean>(false);
+const fileInput = useTemplateRef('romInput');
+const volume = ref<number>(Number(localStorage.getItem('emulator:volume') ?? '0.5'));
 
 onUnmounted(() => {
     unmounted = true;
+    romLoaded.value = false;
+    clearInterval(autosaveInterval);
     disposeEmulator?.();
 });
 
@@ -52,15 +57,48 @@ function loadState(json: string): Promise<void> {
     return cpu.setSaveState(json);
 }
 
-async function onSaveClick() {
-    state.value = await saveState();
-    console.log(state.value);
+async function onSaveClick(slot: number) {
+    if(!props.user) return;
+    const state = await saveState();
+
+    axios.post(store.url(), {
+        'save_data': state,
+        'rom_name': 'test',
+        'slot': slot,
+    }).then(() => {
+        router.reload({
+            only: ['saveStates']
+        })
+    });
 }
 
-async function onLoadClick() {
-    if (state.value) {
-        await loadState(state.value);
+async function onLoadClick(slot: number) {
+    if (props.saveStates && props.saveStates[slot]) {
+        await loadState(props.saveStates[slot].save_data);
     }
+}
+
+async function loadRom() {
+    const handle = await run('/red.gb', canvas.value ?? undefined);
+    cpu = handle.cpu;
+    disposeEmulator = handle.dispose;
+    cpu.setVolume(volume.value);
+
+    romLoaded.value = true;
+
+    autosaveInterval = setInterval(() => {
+        onSaveClick(10);
+    }, 1000 * 60 * 5);
+
+    // Navigated away before the ROM finished loading - tear down immediately.
+    if (unmounted) {
+        disposeEmulator();
+    }
+}
+
+function onVolumeInput() {
+    localStorage.setItem('emulator:volume', String(volume.value));
+    cpu?.setVolume(volume.value);
 }
 
 function incrementSpeed() {
@@ -96,27 +134,87 @@ function press(button: JoypadButton) {
 function release(button: JoypadButton) {
     window.dispatchEvent(new KeyboardEvent('keyup', { code: CODE_FOR_BUTTON[button] }));
 }
-// TODO save states once the architecture for user login/creation is more clear
+
+function convertTZ(dateTime: string) {
+    const date = new Date((typeof dateTime === "string" ? new Date(dateTime) : dateTime).toLocaleString("en-US", {timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone}));
+    return date.toLocaleDateString() + ' ' + date.toLocaleTimeString();
+}
+
+async function downloadState() {
+    const state = await saveState();
+    const file = new File([state], 'romname'+'Save.bin');
+
+    const link = document.createElement('a');
+    link.style.display = 'none';
+    link.href = URL.createObjectURL(file);
+    link.download = file.name;
+
+    link.click();
+
+    // To make this work on Firefox we need to wait
+    // a little while before removing it.
+    setTimeout(() => {
+        URL.revokeObjectURL(link.href);
+        link.parentNode?.removeChild(link);
+    }, 0);
+}
+
+function promptStateUpload() {
+    fileInput.value?.click();
+}
+
+function handleUpload(event: Event) {
+    const file = (event.target as HTMLInputElement)?.files?.[0];
+    if(!file) return;
+    file.text().then((value) => loadState(value));
+}
+
 </script>
 
 <template>
     <div class="overflow-hidden">
-        <div class="flex gap-2 flex-col min-h-[calc(100vh-80px)] w-full items-center justify-center md:scale-150">
+        <div class="flex gap-2 flex-col min-h-[calc(100vh-80px)] w-full items-center justify-center md:scale-140">
             <div class="rounded-full flex text-blue-600 bg-gray-100 gap-2">
-                <div title="Upload ROM" class="cursor-pointer flex justify-center items-center size-10 relative rounded-full"><Upload/></div>
-                <div title="Save State" class="cursor-pointer flex justify-center items-center size-10 relative rounded-full" @click="onSaveClick">
+                <div title="Upload ROM" class="cursor-pointer flex justify-center items-center size-10 relative rounded-full" @click="loadRom()"><Upload/></div>
+                <div title="Load State" class="flex justify-center items-center size-10 relative rounded-full">
                     <DropdownMenu>
-                        <DropdownMenuTrigger><HardDriveDownload/></DropdownMenuTrigger>
-                        <DropdownMenuContent>
-
+                        <DropdownMenuTrigger :class="{ 'cursor-not-allowed!': !romLoaded }"  class="mx-auto h-full cursor-pointer"><HardDriveDownload/></DropdownMenuTrigger>
+                        <DropdownMenuContent class="bg-white relative z-10 grid grid-cols-3 gap-1 p-1 rounded" v-if="romLoaded">
+                            <DropdownMenuLabel class="col-span-3 text-center">Load state</DropdownMenuLabel>
+                            <DropdownMenuItem class="col-span-3 border" v-if="user">Autosave
+                                <p v-if="saveStates?.[10]" class="w-full mb-1 text-right">{{ saveStates?.[10].rom_name }} - {{ convertTZ(saveStates?.[10].created_at) }}</p>
+                                <p v-else class="w-full text-right">empty</p>
+                            </DropdownMenuItem>
+                            <DropdownMenuItem v-for="index in 9" :key="index" class="border flex justify-center align-middle text-center" v-if="user" @click="onLoadClick(index)">
+                                <div v-if="saveStates?.[index]">
+                                    <p class="w-full mb-1">{{ saveStates[index].rom_name }}</p>
+                                    <p>{{ convertTZ(saveStates[index].created_at) }}</p>
+                                </div>
+                                <p v-else>empty</p>
+                            </DropdownMenuItem>
+                            <DropdownMenuItem class="col-span-3 text-center block whitespace-nowrap" @click="promptStateUpload()">Import from file</DropdownMenuItem>
                         </DropdownMenuContent>
                     </DropdownMenu>
-
                 </div>
-                <div title="Load State" class="cursor-pointer flex justify-center items-center size-10 relative rounded-full"><HardDriveUpload/></div>
+                <div title="Save State" class="flex justify-center items-center size-10 relative rounded-full">
+                    <DropdownMenu>
+                        <DropdownMenuTrigger :class="{ 'cursor-not-allowed!': !romLoaded }" class="mx-auto h-full cursor-pointer"><HardDriveUpload/></DropdownMenuTrigger>
+                        <DropdownMenuContent class="bg-white relative z-10 grid grid-cols-3 gap-1 p-1 rounded" v-if="romLoaded">
+                            <DropdownMenuLabel class="col-span-3 text-center">Save state</DropdownMenuLabel>
+                            <DropdownMenuItem v-for="index in 9" :key="index" class="border flex justify-center align-middle text-center" v-if="user" @click="onSaveClick(index)">
+                                <div v-if="saveStates?.[index]">
+                                    <p class="w-full mb-1">{{ saveStates[index].rom_name }}</p>
+                                    <p>{{ convertTZ(saveStates[index].created_at) }}</p>
+                                </div>
+                                <p v-else>empty</p>
+                            </DropdownMenuItem>
+                            <DropdownMenuItem class="col-span-3 text-center block whitespace-nowrap" @click="downloadState()">Export to file</DropdownMenuItem>
+                        </DropdownMenuContent>
+                    </DropdownMenu>
+                </div>
                 <div title="Emulation Speed" class="cursor-pointer flex justify-center items-center size-10 relative rounded-full" :class="{'bg-black/20': speed != 1}" @click="incrementSpeed"><ChevronsRight/><p class="text-[10px] top-6 left-3.5 text-gray-700 absolute">x{{ speed }}</p></div>
             </div>
-            <div class="relative w-70 rounded-3xl rounded-br-[72px] border-t border-white/50 bg-gray-100 pt-5 pb-8 shadow-[0_25px_60px_rgba(0,0,0,0.55)]">
+            <div class="relative w-70 rounded-3xl rounded-br-[72px] border-t border-white/50 bg-gray-100 pt-5 pb-8 shadow-[0_25px_60px_rgba(0,0,0,0.55)] z-0">
                     <div class="w-55 bg-gray-300 relative rounded-lg rounded-br-4xl mx-auto overflow-hidden">
                         <hr class="mx-2 mt-1 border-pink-600" />
                         <hr class="mx-2 mt-1 border-blue-600" />
@@ -129,6 +227,18 @@ function release(button: JoypadButton) {
                         ></canvas>
                     </div>
                 <!-- Controls -->
+                <div class="mt-4 flex items-center gap-2 px-8" title="Volume">
+                    <Volume2 class="size-4 text-gray-600" />
+                    <input
+                        type="range"
+                        min="0"
+                        max="1"
+                        step="0.01"
+                        v-model.number="volume"
+                        @input="onVolumeInput"
+                        class="w-full accent-pink-600"
+                    />
+                </div>
                 <div class="mt-8 flex items-start justify-between px-8">
                     <!-- D-pad -->
                     <div class="flex flex-col items-center">
@@ -268,4 +378,5 @@ function release(button: JoypadButton) {
             </div>
         </div>
     </div>
+    <input type="file" ref="romInput" name="rom" hidden @change="handleUpload($event)">
 </template>

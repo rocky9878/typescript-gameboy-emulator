@@ -135,6 +135,17 @@ export class CPU {
         this.bus.setState(state.bus);
     }
 
+    // volume is 0..1; ramps slightly to avoid clicks.
+    setVolume(volume: number) {
+        const clamped = Math.max(0, Math.min(1, volume));
+        gain.gain.setTargetAtTime(clamped, audioCtx.currentTime, 0.01);
+    }
+
+    getVolume(): number {
+        return gain.gain.value;
+    }
+
+
     step() {
         let instruction_byte = this.bus.readByte(this.register.pc);
         const prefixed = instruction_byte == 0xCB;
@@ -1355,8 +1366,10 @@ const KEY_TO_BUTTON: Record<string, JoypadButton> = {
 // audio scheduling - locked to the same real-time clock the AudioContext itself uses,
 // so the drift can't accumulate regardless of the display's true refresh rate.
 let CPU_SPEED = 4194304;
-
 let runningApu: Apu | null = null;
+const audioCtx = new AudioContext();
+const gain = audioCtx.createGain();
+gain.connect(audioCtx.destination);
 
 export function setCpuSpeed(speed: 1|2|3) {
     CPU_SPEED = 4194304 * speed;
@@ -1377,9 +1390,9 @@ export type RunHandle = {
     dispose: () => void;
 };
 
-export async function run(canvas?: HTMLCanvasElement): Promise<RunHandle> {
+export async function run(rom: string, canvas?: HTMLCanvasElement): Promise<RunHandle> {
     const cpu = new CPU();
-    const response = await fetch('/red.gb');
+    const response = await fetch(rom);
     const buffer = await response.arrayBuffer();
     const bytes = new Uint8Array(buffer);
     cpu.bus.rom.memory = bytes; // copies bytes into memory starting at pos 0
@@ -1387,7 +1400,6 @@ export async function run(canvas?: HTMLCanvasElement): Promise<RunHandle> {
 
     if (bytes[0x143] === 0xc0) cpu.register.a = u8(0x11); // see CPU.init()'s comment
 
-    const audioCtx = new AudioContext();
     cpu.bus.apu = new Apu(audioCtx.sampleRate);
     runningApu = cpu.bus.apu;
 
@@ -1540,7 +1552,7 @@ export async function run(canvas?: HTMLCanvasElement): Promise<RunHandle> {
 
             const source = audioCtx.createBufferSource();
             source.buffer = audioBuffer;
-            source.connect(audioCtx.destination);
+            source.connect(gain);
 
             // Fell behind (e.g. backgrounded tab)? Don't let queued audio pile up and play back-to-back late.
             if (nextChunkTime < audioCtx.currentTime) nextChunkTime = audioCtx.currentTime + SCHEDULE_LEAD;
