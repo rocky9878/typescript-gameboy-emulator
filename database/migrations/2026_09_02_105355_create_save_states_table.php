@@ -15,10 +15,11 @@ return new class extends Migration
         Schema::create('save_states', function (Blueprint $table) {
             $table->id();
             $table->foreignIdFor(User::class);
-            $table->text('save_data');
+            $table->mediumText('save_data');
             $table->string('rom_name');
             $table->unsignedTinyInteger('slot');
             $table->timestamps();
+            $table->unique(['user_id', 'slot']);
         });
     }
 

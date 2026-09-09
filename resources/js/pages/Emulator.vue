@@ -57,6 +57,14 @@ onUnmounted(() => {
     window.onbeforeunload = null;
 });
 
+function baseName(name: string): string {
+    return name
+        .normalize('NFC')
+        .replace(/\.(gbc?|bin)$/i, '')
+        .replace(/\s*\(\d+\)$/, '')
+        .trim();
+}
+
 async function saveState(): Promise<string> {
     if (!cpu) {
         throw new Error('Emulator not running yet');
@@ -65,12 +73,16 @@ async function saveState(): Promise<string> {
     return cpu.getSaveState();
 }
 
-function loadState(json: string): Promise<void> {
+function loadState(json: string, rom_name: string): void {
     if (!cpu) {
         throw new Error('Emulator not running yet');
     }
+    console.log(baseName(rom.value), baseName(rom_name))
+    if(baseName(rom.value) != baseName(rom_name)) {
+        if(!confirm('The save state rom name does not match the loaded rom, are you sure you want to load this state?')) return;
+    }
 
-    return cpu.setSaveState(json);
+    cpu.setSaveState(json);
 }
 
 async function onSaveClick(slot: number) {
@@ -79,7 +91,7 @@ async function onSaveClick(slot: number) {
 
     axios.post(store.url(), {
         'save_data': state,
-        'rom_name': rom.value,
+        'rom_name': baseName(rom.value),
         'slot': slot,
     }).then(() => {
         router.reload({
@@ -90,19 +102,22 @@ async function onSaveClick(slot: number) {
 
 async function onLoadClick(slot: number) {
     if (props.saveStates && props.saveStates[slot]) {
-        await loadState(props.saveStates[slot].save_data);
+        await loadState(props.saveStates[slot].save_data, props.saveStates[slot].rom_name);
     }
 }
 
 async function loadRom() {
-    if(rom.value) return;
+    if(rom.value) {
+        clearInterval(autosaveInterval);
+        disposeEmulator?.();
+    };
     const handle = await run('/Pokémon_red.gb', canvas.value ?? undefined, consoleMode.value);
     cpu = handle.cpu;
     disposeEmulator = handle.dispose;
     cgbActive.value = handle.cgb;
     cpu.setVolume(volume.value);
 
-    rom.value = 'Pokémon_red.gb'.substring(0, 'Pokémon_red.gb'.length - 3);
+    rom.value = 'Pokémon_red';
 
     autosaveInterval = setInterval(() => {
         onSaveClick(10);
@@ -160,7 +175,7 @@ function convertTZ(dateTime: string) {
 
 async function downloadState() {
     const state = await saveState();
-    const file = new File([state], rom.value+'_State.bin');
+    const file = new File([state], rom.value+'.bin');
 
     const link = document.createElement('a');
     link.style.display = 'none';
@@ -185,7 +200,7 @@ function promptUpload(type: 'rom'|'state') {
 async function handleUpload(event: Event) {
     const file = (event.target as HTMLInputElement)?.files?.[0];
     if(!file) return;
-    if(fileInput.value?.ariaLabel === 'state') file.text().then((value) => loadState(value));
+    if(fileInput.value?.ariaLabel === 'state') file.text().then((value) => loadState(value, baseName(file.name)));
     else {
         clearInterval(autosaveInterval);
         disposeEmulator?.();
@@ -198,7 +213,7 @@ async function handleUpload(event: Event) {
             cpu.setVolume(volume.value);
         });
 
-        rom.value = file.name;
+        rom.value = baseName(file.name);
 
         autosaveInterval = setInterval(() => {
             onSaveClick(10);
@@ -221,7 +236,7 @@ function instabilityWarning() {
                 <div title="Start ROM" class="cursor-pointer flex justify-center items-center size-10 relative rounded-full">
                     <DropdownMenu>
                         <DropdownMenuTrigger class="mx-auto h-full cursor-pointer"><Upload/></DropdownMenuTrigger>
-                        <DropdownMenuContent class="gap-1 max-w-screen">
+                        <DropdownMenuContent class="gap-1 max-w-screen sm:max-w-140">
                             <DropdownMenuLabel class="col-span-3 text-center">Load Rom</DropdownMenuLabel>
                             <DropdownMenuItem class="col-span-3 text-center block whitespace-nowrap" @click="loadRom()">very secret and very legal pokemon red Rom</DropdownMenuItem>
                             <DropdownMenuItem class="col-span-3 text-center block whitespace-nowrap" @click="promptUpload('rom')">Import Rom</DropdownMenuItem>
@@ -231,7 +246,7 @@ function instabilityWarning() {
                 <div title="Load State" class="flex justify-center items-center size-10 relative rounded-full">
                     <DropdownMenu>
                         <DropdownMenuTrigger :class="{ 'pointer-events-none': !rom }"  class="mx-auto h-full cursor-pointer"><HardDriveDownload/></DropdownMenuTrigger>
-                        <DropdownMenuContent class="grid grid-cols-3 gap-1 max-w-screen" v-if="rom">
+                        <DropdownMenuContent class="grid grid-cols-3 gap-1 max-w-screen sm:max-w-140" v-if="rom">
                             <DropdownMenuLabel class="col-span-3 text-center">Load state</DropdownMenuLabel>
                             <DropdownMenuItem class="col-span-3 border" v-if="user">Autosave
                                 <p v-if="saveStates?.[10]" class="w-full mb-1 text-right">{{ saveStates?.[10].rom_name }} - {{ convertTZ(saveStates?.[10].created_at) }}</p>

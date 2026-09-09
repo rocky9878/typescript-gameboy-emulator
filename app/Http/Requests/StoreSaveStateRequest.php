@@ -25,7 +25,7 @@ class StoreSaveStateRequest extends FormRequest
         return [
             'save_data' => ['required', 'string'],
             'rom_name' => ['required', 'string'],
-            'slot' => ['required', 'max:10', 'min:1', 'integer'],
+            'slot' => ['required', 'integer', 'max:10', 'min:1'],
         ];
     }
 }
