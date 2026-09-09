@@ -10,7 +10,7 @@ import { instructionFromByte } from "./opcodes";
 
 // Bumped whenever the shape of the serialized state below changes in a way that would
 // make an older save state misread as valid rather than fail loudly.
-const SAVE_STATE_VERSION = 1;
+const SAVE_STATE_VERSION = 2;
 
 interface SaveState {
     version: number;
@@ -52,13 +52,33 @@ export class CPU {
 
     async init(romPath: string): Promise<void> {
         await this.bus.init(romPath);
+        this.configureForRom();
+    }
 
-        // $143=$C0 (CGB-exclusive) cartridges refuse to boot on real DMG hardware at all,
-        // so A is guaranteed to hold the CGB boot handoff value (bit 4 set) rather than
-        // this engine's otherwise-DMG-only default; some ROMs (like blargg's
-        // interrupt_time) read this back to detect CGB support before using it.
-        if (this.bus.rom.memory[0x143] === 0xc0) {
+    // Reads the cartridge header and sets the console mode plus the register state the boot
+    // ROM would have left behind (this engine skips the boot ROM). Call once, after the ROM
+    // bytes and MBC are in place. `mode` forces DMG/CGB behaviour; 'auto' uses the header.
+    configureForRom(mode: ConsoleMode = 'auto'): void {
+        const header = this.bus.rom.memory[0x143] ?? 0;
+        // $80 = CGB-enhanced (also runs on DMG), $C0 = CGB-only - the exact values the boot
+        // ROM checks (a plain bit-7 test would false-positive on old carts whose title runs
+        // through $143). A real CGB runs both in CGB mode; 'dmg' forces DMG behaviour.
+        const headerWantsCgb = header === 0x80 || header === 0xc0;
+        this.bus.cgb = mode === 'cgb' || (mode === 'auto' && headerWantsCgb);
+
+        this.bus.applyBootState();
+
+        if (this.bus.cgb) {
+            // CGB-in-CGB-mode post-boot register state (Pan Docs). Games branch on these for
+            // hardware detection.
             this.register.a = u8(0x11);
+            this.register.f = { zero: true, subtract: false, half_carry: false, carry: false };
+            this.register.b = u8(0x00);
+            this.register.c = u8(0x00);
+            this.register.d = u8(0xff);
+            this.register.e = u8(0x56);
+            this.register.h = u8(0x00);
+            this.register.l = u8(0x0d);
         }
     }
 
@@ -849,18 +869,11 @@ export class CPU {
                 return u16(this.register.pc + 2);
             }
             case 'STOP': {
-                // Real CGB double-speed switching (KEY1 bit0 armed, then STOP toggles
-                // speed) only applies to $143=$C0 (CGB-exclusive) cartridges: those refuse
-                // to boot on real DMG hardware at all, so there's no DMG-compatibility risk
-                // in treating them as genuinely running on CGB. A $143=$80 ("compatible")
-                // header does NOT mean the same thing - it just means the ROM CAN run on
-                // either console, with actual behavior decided by which console it's
-                // running on; since this emulator otherwise only ever behaves as a DMG
-                // (boot register defaults, WRAM/VRAM banking, etc. are all DMG-only),
-                // treating a $80 cart's STOP as a real speed switch broke blargg's
-                // cpu_instrs, which deliberately exercises this exact byte sequence on a
-                // $80 cart expecting DMG (no-op) behavior.
-                if (this.bus.rom.memory[0x143] === 0xc0) {
+                // CGB double-speed switch: KEY1 bit 0 armed, then STOP toggles the speed.
+                // On DMG hardware (bus.cgb false) STOP is a plain no-op - a $80 cart running
+                // in forced-DMG mode expects that (blargg's cpu_instrs exercises the exact
+                // byte sequence expecting no-op behaviour).
+                if (this.bus.cgb) {
                     const key1 = this.bus.readByte(u16(0xff4d));
 
                     if (key1 & 1) {
@@ -922,6 +935,10 @@ export class CPU {
     }
 
     handleTimer(tCycle: number) {
+        // A general-purpose VRAM DMA freezes the CPU; fold those cycles in so the rest of
+        // the system still advances for the transfer's duration.
+        tCycle += this.bus.takeHdmaStall();
+
         // At double speed the CPU executes twice as many T-states per unit of real time.
         // DIV/TIMA speed up right along with the CPU (so they use the raw tCycle count
         // below), but the PPU and all sound timings stay at the fixed real-world rate
@@ -1338,13 +1355,6 @@ export class CPU {
 }
 
 
-const SHADES: [number, number, number][] = [
-    [0x9b, 0xbc, 0x0f], // colorId 0 (lightest)
-    [0x8b, 0xac, 0x0f],
-    [0x30, 0x62, 0x30],
-    [0x0f, 0x38, 0x0f], // colorId 3 (darkest)
-];
-
 const KEY_TO_BUTTON: Record<string, JoypadButton> = {
     ArrowUp: 'up',
     ArrowDown: 'down',
@@ -1377,20 +1387,31 @@ export function setCpuSpeed(speed: 1|2|3) {
 
 export type RunHandle = {
     cpu: CPU;
+    // Whether the ROM is running in CGB mode (colour). Reflects the resolved `mode`.
+    cgb: boolean;
     // Tears down the rAF loop, event listeners and AudioContext. Must run on SPA navigation
     // away, or the key listeners keep swallowing Z/X/Enter/arrows on other pages.
     dispose: () => void;
 };
 
-export async function run(rom: string, canvas?: HTMLCanvasElement): Promise<RunHandle> {
+export type ConsoleMode = 'auto' | 'dmg' | 'cgb';
+
+export async function run(rom: string, canvas?: HTMLCanvasElement, mode: ConsoleMode = 'auto'): Promise<RunHandle> {
     const cpu = new CPU();
     const response = await fetch(rom);
+    console.log('test');
+    if (!response.ok) {
+        throw new Error(`Failed to load ROM "${rom}": ${response.status} ${response.statusText}`);
+    }
     const buffer = await response.arrayBuffer();
     const bytes = new Uint8Array(buffer);
+    // A returned HTML error page would otherwise be parsed as a (garbage) cartridge.
+    if (bytes.length < 0x150 || bytes[0x104] !== 0xce || bytes[0x105] !== 0xed) {
+        throw new Error(`"${rom}" is not a Game Boy ROM (missing Nintendo logo header)`);
+    }
     cpu.bus.rom.memory = bytes; // copies bytes into memory starting at pos 0
     cpu.bus.mbc = createMbc(bytes);
-
-    if (bytes[0x143] === 0xc0) cpu.register.a = u8(0x11); // see CPU.init()'s comment
+    cpu.configureForRom(mode);
 
     cpu.bus.apu = new Apu(audioCtx.sampleRate);
     const sampleRate = audioCtx.sampleRate;
@@ -1480,18 +1501,13 @@ export async function run(rom: string, canvas?: HTMLCanvasElement): Promise<RunH
     const ctx = canvas?.getContext('2d');
 
     if (ctx) {
+        // The PPU framebuffer is already packed 0xAABBGGRR - a Uint32 view over the
+        // ImageData bytes lets each frame be a single typed-array copy. (Browsers are all
+        // little-endian, so packed RGBA maps straight onto the R,G,B,A byte order.)
         const image = ctx.createImageData(160, 144);
+        const pixels = new Uint32Array(image.data.buffer);
         cpu.bus.ppu.onFrame = () => {
-            const framebuffer = cpu.bus.ppu.framebuffer;
-
-            for (let i = 0; i < framebuffer.length; i++) {
-                const [r, g, b] = SHADES[framebuffer[i]];
-                image.data[i * 4] = r;
-                image.data[i * 4 + 1] = g;
-                image.data[i * 4 + 2] = b;
-                image.data[i * 4 + 3] = 255;
-            }
-
+            pixels.set(cpu.bus.ppu.framebuffer);
             ctx.putImageData(image, 0, 0);
         };
     }
@@ -1653,5 +1669,5 @@ export async function run(rom: string, canvas?: HTMLCanvasElement): Promise<RunH
         void audioCtx.close();
     };
 
-    return { cpu, dispose };
+    return { cpu, cgb: cpu.bus.cgb, dispose };
 }

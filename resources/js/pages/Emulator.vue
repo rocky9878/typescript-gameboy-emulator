@@ -1,16 +1,15 @@
 <script setup lang="ts">
 import { ChevronsRight, HardDriveDownload, HardDriveUpload, Upload, Volume2 } from '@lucide/vue';
-import { DropdownMenuContent } from 'reka-ui';
-import { onMounted, onUnmounted, ref, useTemplateRef } from 'vue';
+import { onUnmounted, ref, useTemplateRef } from 'vue';
 import { run, setCpuSpeed } from '@/emulator/CPU';
 import type { CPU } from '@/emulator/CPU';
 import type { JoypadButton } from '@/emulator/joypad';
 import { SaveStateMap, User } from '@/types';
-import { DropdownMenuItem, DropdownMenuTrigger, DropdownMenu } from '@/components/ui/dropdown-menu';
-import DropdownMenuLabel from '@/components/ui/dropdown-menu/DropdownMenuLabel.vue';
+import { DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger, DropdownMenu } from '@/components/ui/dropdown-menu';
 import axios from 'axios';
 import { store } from '@/routes';
 import { router } from '@inertiajs/vue3';
+import { toast } from 'vue-sonner';
 
 interface Props {
     user?: User;
@@ -29,8 +28,12 @@ let cpu: CPU | undefined;
 let disposeEmulator: (() => void) | undefined;
 let unmounted = false;
 let autosaveInterval = <number|undefined>undefined;
+const warningShown = ref(false);
 const speed = ref<1|2|3>(1);
 const rom = ref<string>('');
+// 'auto' follows the cartridge header; bind a UI control to override for CGB-enhanced carts.
+const consoleMode = ref<'auto' | 'dmg' | 'cgb'>('auto');
+const cgbActive = ref<boolean>(false);
 const fileInput = useTemplateRef('romInput');
 const volume = ref<number>(Number(localStorage.getItem('emulator:volume') ?? '0.5'));
 
@@ -93,9 +96,10 @@ async function onLoadClick(slot: number) {
 
 async function loadRom() {
     if(rom.value) return;
-    const handle = await run('/Pokémon_red.gb', canvas.value ?? undefined);
+    const handle = await run('/Pokémon_red.gb', canvas.value ?? undefined, consoleMode.value);
     cpu = handle.cpu;
     disposeEmulator = handle.dispose;
+    cgbActive.value = handle.cgb;
     cpu.setVolume(volume.value);
 
     rom.value = 'Pokémon_red.gb'.substring(0, 'Pokémon_red.gb'.length - 3);
@@ -162,7 +166,6 @@ async function downloadState() {
     link.style.display = 'none';
     link.href = URL.createObjectURL(file);
     link.download = file.name;
-
     link.click();
 
     // To make this work on Firefox we need to wait
@@ -185,17 +188,33 @@ function handleUpload(event: Event) {
     if(fileInput.value?.ariaLabel === 'state') file.text().then((value) => loadState(value));
 }
 
+function instabilityWarning() {
+    if(warningShown.value) return;
+    warningShown.value = true;
+    toast.warning('emulating at high speeds may cause audio instability');
+}
+
 </script>
 
 <template>
     <div class="overflow-hidden">
-        <div class="flex gap-2 flex-col min-h-[calc(100vh-80px)] w-full items-center justify-center md:scale-140">
-            <div class="rounded-full flex text-blue-600 bg-gray-100 gap-2">
-                <div title="Upload ROM" class="cursor-pointer flex justify-center items-center size-10 relative rounded-full" @click="loadRom()"><Upload/></div>
+        <div class="flex gap-2 flex-col min-h-[calc(100vh-80px)] w-full items-center justify-center scale-110 md:scale-140">
+            <div class="rounded-full flex text-violet-800 dark:text-violet-200 bg-violet-100 dark:bg-violet-950/50 ring-1 ring-violet-300 dark:ring-violet-800 shadow-sm gap-2">
+                <div title="Start ROM" class="cursor-pointer flex justify-center items-center size-10 relative rounded-full" @click="loadRom()">
+                    <DropdownMenu>
+                        <DropdownMenuTrigger class="mx-auto h-full cursor-pointer"><Upload/></DropdownMenuTrigger>
+                        <DropdownMenuContent class="gap-1 max-w-screen">
+                            <DropdownMenuLabel class="col-span-3 text-center">Load Rom</DropdownMenuLabel>
+                            <DropdownMenuItem class="col-span-3 text-center block whitespace-nowrap" @click="promptUpload('rom')">Import Rom</DropdownMenuItem>
+                            <DropdownMenuItem class="col-span-3 text-center block whitespace-nowrap" @click="promptUpload('rom')">Import Rom</DropdownMenuItem>
+                            <DropdownMenuItem class="col-span-3 text-center block whitespace-nowrap" @click="promptUpload('rom')">Import Rom</DropdownMenuItem>
+                        </DropdownMenuContent>
+                    </DropdownMenu>
+                </div>
                 <div title="Load State" class="flex justify-center items-center size-10 relative rounded-full">
                     <DropdownMenu>
                         <DropdownMenuTrigger :class="{ 'pointer-events-none': !rom }"  class="mx-auto h-full cursor-pointer"><HardDriveDownload/></DropdownMenuTrigger>
-                        <DropdownMenuContent class="bg-white relative z-10 grid grid-cols-3 gap-1 p-1 rounded max-w-screen" v-if="rom">
+                        <DropdownMenuContent class="grid grid-cols-3 gap-1 max-w-screen" v-if="rom">
                             <DropdownMenuLabel class="col-span-3 text-center">Load state</DropdownMenuLabel>
                             <DropdownMenuItem class="col-span-3 border" v-if="user">Autosave
                                 <p v-if="saveStates?.[10]" class="w-full mb-1 text-right">{{ saveStates?.[10].rom_name }} - {{ convertTZ(saveStates?.[10].created_at) }}</p>
@@ -215,7 +234,7 @@ function handleUpload(event: Event) {
                 <div title="Save State" class="flex justify-center items-center size-10 relative rounded-full">
                     <DropdownMenu>
                         <DropdownMenuTrigger :class="{ 'pointer-events-none': !rom }" class="mx-auto h-full cursor-pointer"><HardDriveUpload/></DropdownMenuTrigger>
-                        <DropdownMenuContent class="bg-white relative z-10 grid grid-cols-3 gap-1 p-1 rounded max-w-screen" v-if="rom">
+                        <DropdownMenuContent class="grid grid-cols-3 gap-1 max-w-screen" v-if="rom">
                             <DropdownMenuLabel class="col-span-3 text-center">Save state</DropdownMenuLabel>
                             <DropdownMenuItem v-for="index in 9" :key="index" class="border flex justify-center align-middle text-center" v-if="user" @click="onSaveClick(index)">
                                 <div v-if="saveStates?.[index]">
@@ -228,23 +247,26 @@ function handleUpload(event: Event) {
                         </DropdownMenuContent>
                     </DropdownMenu>
                 </div>
-                <div title="Emulation Speed" class="cursor-pointer flex justify-center items-center size-10 relative rounded-full" :class="{'bg-black/20': speed != 1}" @click="incrementSpeed"><ChevronsRight/><p class="text-[10px] top-6 left-3.5 text-gray-700 absolute">x{{ speed }}</p></div>
+                <div title="Emulation Speed" class="cursor-pointer flex justify-center items-center size-10 relative rounded-full" :class="{'bg-black/20': speed != 1}" @click="incrementSpeed(); instabilityWarning()"><ChevronsRight/><p class="text-[10px] top-6 left-3.5 text-gray-700 absolute">x{{ speed }}</p></div>
             </div>
-            <div class="relative w-70 rounded-3xl rounded-br-[72px] border-t border-white/50 bg-gray-100 pt-5 pb-8 shadow-[0_25px_60px_rgba(0,0,0,0.55)] z-0">
-                    <div class="w-55 bg-gray-300 relative rounded-lg rounded-br-4xl mx-auto overflow-hidden">
-                        <hr class="mx-2 mt-1 border-pink-600" />
-                        <hr class="mx-2 mt-1 border-blue-600" />
-                        <p class="text-[8px] text-white absolute top-px right-6.5 px-1 bg-gray-300">DOT MATRIX WITH STEREO SOUND</p>
+            <div class="relative w-70 rounded-[34px] border-t border-white/25 bg-[radial-gradient(130%_90%_at_30%_0%,#b49fdd,#9078c6_45%,#6d54a8)] pt-5 pb-8 shadow-[0_18px_45px_rgba(0,0,0,0.35)] ring-1 ring-black/10 dark:ring-white/15 z-0">
+                    <!-- Screen bezel -->
+                    <div class="w-56 bg-[#2f2d38] relative rounded-md rounded-b-[22px] mx-auto pt-2.5 pb-2 px-1.5 shadow-[inset_0_1px_4px_rgba(0,0,0,0.5)]">
+                        <span v-if="cgbActive" class="absolute -top-0.5 right-2 text-[7px] font-bold tracking-widest text-fuchsia-300/80 pt-2">GBC</span>
                         <canvas
                             ref="canvas"
                             width="160"
                             height="144"
-                            class="border border-gray-400 mx-auto mt-1 mb-3 block [image-rendering:pixelated]"
+                            class="mx-auto block rounded-xs bg-black [image-rendering:pixelated]"
                         ></canvas>
+                        <p class="mt-1 text-center text-[8px] font-bold tracking-wide text-neutral-300">
+                            GAME BOY
+                            <span class="bg-[linear-gradient(to_right,#f87171,#fbbf24,#4ade80,#60a5fa,#c084fc)] bg-clip-text text-transparent italic lowercase">color</span>
+                        </p>
                     </div>
                 <!-- Controls -->
                 <div class="mt-4 flex items-center gap-2 px-8" title="Volume">
-                    <Volume2 class="size-4 text-gray-600" />
+                    <Volume2 class="size-4 text-white/55" />
                     <input
                         type="range"
                         min="0"
@@ -252,7 +274,7 @@ function handleUpload(event: Event) {
                         step="0.01"
                         v-model.number="volume"
                         @input="onVolumeInput"
-                        class="w-full accent-pink-600"
+                        class="w-full accent-violet-600"
                     />
                 </div>
                 <div class="mt-8 flex items-start justify-between px-8">
@@ -315,7 +337,7 @@ function handleUpload(event: Event) {
                         </button>
                         <div></div>
                     </div>
-                    <span class="mt-1 text-center text-[7px] font-semibold tracking-wide text-gray-400">ARROW KEYS</span>
+                    <span class="mt-1 text-center text-[7px] font-semibold tracking-wide text-white/65">ARROW KEYS</span>
                     </div>
 
                     <!-- A / B buttons -->
@@ -324,7 +346,7 @@ function handleUpload(event: Event) {
                             <button
                                 aria-label="B"
                                 title="X"
-                                class="flex h-10 w-10 items-center justify-center rounded-full bg-pink-600 text-xs font-bold text-pink-950/70 shadow-[0_3px_0_#9d174d,inset_0_2px_2px_rgba(255,255,255,0.3)] transition-transform active:translate-y-0.75 active:shadow-[0_1px_0_#9d174d]"
+                                class="flex h-10 w-10 items-center justify-center rounded-full bg-gradient-to-b from-neutral-600 to-neutral-800 text-xs font-bold text-neutral-300 shadow-[0_3px_0_#1c1917,inset_0_2px_2px_rgba(255,255,255,0.25)] transition-transform active:translate-y-0.75 active:shadow-[0_1px_0_#1c1917]"
                                 @mousedown="press('b')"
                                 @mouseup="release('b')"
                                 @mouseleave="release('b')"
@@ -333,13 +355,13 @@ function handleUpload(event: Event) {
                             >
                                 B
                             </button>
-                            <span class="rotate-[22deg] text-[7px] font-semibold tracking-wide text-gray-400">X</span>
+                            <span class="rotate-[22deg] text-[7px] font-semibold tracking-wide text-white/60">X</span>
                         </div>
                         <div class="absolute top-4 right-0 flex flex-col items-center gap-1">
                             <button
                                 aria-label="A"
                                 title="Z"
-                                class="flex h-10 w-10 items-center justify-center rounded-full bg-pink-600 text-xs font-bold text-pink-950/70 shadow-[0_3px_0_#9d174d,inset_0_2px_2px_rgba(255,255,255,0.3)] transition-transform active:translate-y-0.75 active:shadow-[0_1px_0_#9d174d]"
+                                class="flex h-10 w-10 items-center justify-center rounded-full bg-gradient-to-b from-neutral-600 to-neutral-800 text-xs font-bold text-neutral-300 shadow-[0_3px_0_#1c1917,inset_0_2px_2px_rgba(255,255,255,0.25)] transition-transform active:translate-y-0.75 active:shadow-[0_1px_0_#1c1917]"
                                 @mousedown="press('a')"
                                 @mouseup="release('a')"
                                 @mouseleave="release('a')"
@@ -348,7 +370,7 @@ function handleUpload(event: Event) {
                             >
                                 A
                             </button>
-                            <span class="rotate-[22deg] text-[7px] font-semibold tracking-wide text-gray-400">Z</span>
+                            <span class="rotate-[22deg] text-[7px] font-semibold tracking-wide text-white/60">Z</span>
                         </div>
                     </div>
                 </div>
@@ -366,8 +388,8 @@ function handleUpload(event: Event) {
                             @touchstart.prevent="press('select')"
                             @touchend.prevent="release('select')"
                         ></button>
-                        <span class="text-[8px] font-bold tracking-wide text-gray-500">
-                            SELECT <span class="font-normal text-gray-400">Shift</span>
+                        <span class="text-[8px] font-bold tracking-wide text-white/70">
+                            SELECT <span class="font-normal text-white/40">Shift</span>
                         </span>
                     </div>
                     <div class="flex flex-col items-center gap-1.5">
@@ -381,15 +403,15 @@ function handleUpload(event: Event) {
                             @touchstart.prevent="press('start')"
                             @touchend.prevent="release('start')"
                         ></button>
-                        <span class="text-[8px] font-bold tracking-wide text-gray-500">
-                            START <span class="font-normal text-gray-400">Enter</span>
+                        <span class="text-[8px] font-bold tracking-wide text-white/70">
+                            START <span class="font-normal text-white/40">Enter</span>
                         </span>
                     </div>
                 </div>
 
                 <!-- Speaker grille -->
-                <div class="absolute right-7 bottom-6 grid -rotate-[22deg] grid-cols-5 gap-1.5">
-                    <div v-for="n in 15" :key="n" class="h-1 w-1 rounded-full bg-gray-400"></div>
+                <div class="absolute right-6 bottom-6 flex -rotate-[22deg] gap-1.5">
+                    <div v-for="n in 6" :key="n" class="h-6 w-1 rounded-full bg-violet-950/20"></div>
                 </div>
             </div>
         </div>

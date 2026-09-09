@@ -1,5 +1,13 @@
 import type { MemoryBus } from ".";
-import { u16, u8 } from ".";
+import { cgb555ToRgba, u16, u8 } from ".";
+
+// DMG green LCD colours as packed 0xAABBGGRR (little-endian RGBA), indexed by shade 0-3.
+const DMG_SHADES = [
+    [0x9b, 0xbc, 0x0f], // lightest
+    [0x8b, 0xac, 0x0f],
+    [0x30, 0x62, 0x30],
+    [0x0f, 0x38, 0x0f], // darkest
+].map(([r, g, b]) => ((0xff << 24) | (b << 16) | (g << 8) | r) >>> 0);
 
 const LCDC = 0xff40;
 const STAT = 0xff41;
@@ -42,7 +50,8 @@ export class ppu {
     // advancing PPU/timer state only after fully completing, rather than per M-cycle), so
     // 451 is calibrated empirically against oam_bug/1-lcd_sync.gb's own pass/fail check.
     firstLineDots = 451;
-    framebuffer: Uint8Array = new Uint8Array(160 * 144);
+    // Packed 0xAABBGGRR pixels, ready to hand straight to an ImageData / canvas.
+    framebuffer: Uint32Array = new Uint32Array(160 * 144);
     onFrame: (() => void) | null = null;
     private windowLine = 0;
 
@@ -180,6 +189,11 @@ export class ppu {
         if (statBit >= 0 && (stat >> statBit & 1)) {
             this.requestInterrupt(1); // lcd stat interrupt
         }
+
+        // HBlank VRAM DMA advances 16 bytes on entry to each HBlank (no-op unless one is
+        // active). setMode(HBlank) only fires during active rendering, which is exactly when
+        // it should run.
+        if (mode === PpuMode.HBlank) this.bus.hblankDmaStep();
     }
 
     private requestInterrupt(bit: number): void {
@@ -187,89 +201,95 @@ export class ppu {
         this.bus.writeByte(u16(IF), u8(iflag | (1 << bit)));
     }
 
-    // colorId (0-3, pre-palette) of the background/window pixel drawn at each x this line,
-    // needed so sprites can test "behind background" priority.
+    // Per-x scratch for the current scanline: BG/window colour id (0-3, pre-palette) so
+    // sprites can test priority, and the CGB BG-over-OBJ attribute bit.
     private bgColorIds: number[] = new Array(160).fill(0);
+    private bgPriority: boolean[] = new Array(160).fill(false);
 
-    private tileRowBytes(tileAddr: number, pixelY: number, unsignedAddressing: boolean, tileIndex: number): [number, number] {
+    // 8x8 tile row, as the two bitplane bytes. `bank` is the VRAM bank (CGB); `pixelY` is
+    // already Y-flipped by the caller.
+    private tileRowBytes(pixelY: number, unsigned: boolean, tileIndex: number, bank: number): [number, number] {
         let addr: number;
-        if (unsignedAddressing) {
+        if (unsigned) {
             addr = 0x8000 + tileIndex * 16;
         } else {
             // Signed tile index (-128..127) relative to $9000. Must stay a genuine negative
-            // number for indices >127 - re-masking it with u8() (0-255) would send it back
-            // into the wrong half of VRAM entirely (e.g. tile $FD landing at $9FD0, inside
-            // the tilemap, instead of $8FD0, its actual tile data).
+            // number for indices >127 - masking to 0-255 would land it in the wrong half of
+            // VRAM (tile $FD -> $9FD0, inside the tilemap, instead of $8FD0).
             const signedTile = tileIndex > 127 ? tileIndex - 256 : tileIndex;
             addr = 0x9000 + signedTile * 16;
         }
-        return [this.bus.readByte(u16(addr + pixelY * 2)), this.bus.readByte(u16(addr + pixelY * 2 + 1))];
+        const off = addr - 0x8000 + pixelY * 2;
+        return [this.bus.readVram(off, bank), this.bus.readVram(off + 1, bank)];
+    }
+
+    // 0-3 colour id for one BG/window tile pixel. `attr` is the CGB attribute byte (0 on
+    // DMG), supplying the tile's VRAM bank and X/Y flip.
+    private bgTilePixel(tileIndex: number, attr: number, px: number, py: number, unsigned: boolean): number {
+        const bank = (attr >> 3) & 1;
+        const [b1, b2] = this.tileRowBytes((attr & 0x40) ? 7 - py : py, unsigned, tileIndex, bank);
+        const bit = (attr & 0x20) ? px : 7 - px;
+        return (((b2 >> bit) & 1) << 1) | ((b1 >> bit) & 1);
     }
 
     renderScanLine(line: number) {
+        const cgb = this.bus.cgb;
         const LCDC = this.bus.readByte(u16(0xff40));
-        const bgWindowEnabled = (LCDC >> 0) & 1;
-        const windowEnabled = (LCDC >> 5) & 1;
+        // DMG: bit 0 enables BG+window. CGB: bit 0 is the BG/OBJ master-priority bit - BG is
+        // always drawn, and when it's clear sprites unconditionally win the priority test.
+        const bgMasterPriority = (LCDC & 1) === 1;
+        const bgEnabled = cgb || bgMasterPriority;
+        const windowEnabled = ((LCDC >> 5) & 1) === 1 && bgEnabled;
         const unsignedAddressing = ((LCDC >> 4) & 1) === 1;
         const bgp = this.bus.readByte(u16(0xff47));
 
         const wy = this.bus.readByte(u16(0xff4a));
         const wx = this.bus.readByte(u16(0xff4b)) - 7;
-        const windowVisibleThisLine = windowEnabled && bgWindowEnabled && line >= wy;
+        const windowVisibleThisLine = windowEnabled && line >= wy;
         let drewWindowThisLine = false;
 
         const scy = this.bus.readByte(u16(0xff42));
         const scx = this.bus.readByte(u16(0xff43));
 
-        let x = 0;
-        while (x <= 159) {
+        const rowBase = line * 160;
+
+        for (let x = 0; x < 160; x++) {
             let colorId = 0;
+            let attr = 0;
+            let drewTile = false;
 
             if (windowVisibleThisLine && x >= wx) {
                 drewWindowThisLine = true;
-
                 const winX = x - wx;
                 const winY = this.windowLine;
-                const tileCol = winX >> 3;
-                const tileRow = winY >> 3;
-                const pixelX = winX & 7;
-                const pixelY = winY & 7;
-
-                const mapBase = ((LCDC >> 6) & 1) ? 0x9C00 : 0x9800;
-                const tileIndex = this.bus.readByte(u16(mapBase + tileRow * 32 + tileCol));
-                const [byte1, byte2] = this.tileRowBytes(mapBase, pixelY, unsignedAddressing, tileIndex);
-
-                const bit = 7 - pixelX;
-                colorId = bgWindowEnabled ? (((byte2 >> bit) & 1) << 1 | ((byte1 >> bit) & 1)) : 0;
-            } else if (bgWindowEnabled) {
-                const bgX = (x + scx) & 0xFF;        // wraps around the 256x256 plane
-                const bgY = (line + scy) & 0xFF;
-
-                const tileCol = bgX >> 3;            // which of the 32 tiles, horizontally
-                const tileRow = bgY >> 3;            // which of the 32 tiles, vertically
-                const pixelX = bgX & 7;              // x within that 8x8 tile
-                const pixelY = bgY & 7;              // y within that 8x8 tile
-
-                const mapBase = ((LCDC >> 3) & 1) ? 0x9C00 : 0x9800;
-                const tileIndex = this.bus.readByte(u16(mapBase + tileRow * 32 + tileCol));
-                const [byte1, byte2] = this.tileRowBytes(mapBase, pixelY, unsignedAddressing, tileIndex);
-
-                const bit = 7 - pixelX;   // pixel 0 is the MSB, not LSB
-                colorId = ((byte2 >> bit) & 1) << 1 | ((byte1 >> bit) & 1);   // value 0-3
+                const mapBase = ((LCDC >> 6) & 1) ? 0x9c00 : 0x9800;
+                const mapOff = mapBase - 0x8000 + (winY >> 3) * 32 + (winX >> 3);
+                attr = cgb ? this.bus.readVram(mapOff, 1) : 0;
+                colorId = this.bgTilePixel(this.bus.readVram(mapOff, 0), attr, winX & 7, winY & 7, unsignedAddressing);
+                drewTile = true;
+            } else if (bgEnabled) {
+                const bgX = (x + scx) & 0xff;   // wraps around the 256x256 plane
+                const bgY = (line + scy) & 0xff;
+                const mapBase = ((LCDC >> 3) & 1) ? 0x9c00 : 0x9800;
+                const mapOff = mapBase - 0x8000 + (bgY >> 3) * 32 + (bgX >> 3);
+                attr = cgb ? this.bus.readVram(mapOff, 1) : 0;
+                colorId = this.bgTilePixel(this.bus.readVram(mapOff, 0), attr, bgX & 7, bgY & 7, unsignedAddressing);
+                drewTile = true;
             }
 
             this.bgColorIds[x] = colorId;
-            this.framebuffer[line * 160 + x] = (bgp >> (colorId * 2)) & 0b11;
-
-            x++;
+            this.bgPriority[x] = drewTile && cgb && (attr & 0x80) !== 0;
+            this.framebuffer[rowBase + x] = cgb
+                ? cgb555ToRgba(this.bus.bgColor555(attr & 7, colorId))
+                : DMG_SHADES[(bgp >> (colorId * 2)) & 3];
         }
 
         if (drewWindowThisLine) this.windowLine++;
 
-        this.renderSprites(line, LCDC);
+        this.renderSprites(line, LCDC, cgb, bgMasterPriority);
     }
 
-    private renderSprites(line: number, LCDC: number): void {
+    private renderSprites(line: number, LCDC: number, cgb: boolean, bgMasterPriority: boolean): void {
         if (!((LCDC >> 1) & 1)) return; // sprites disabled
 
         const height = ((LCDC >> 2) & 1) ? 16 : 8;
@@ -286,9 +306,13 @@ export class ppu {
             visible.push({ oamIndex, x, y, tile, flags });
         }
 
-        // Draw lowest-priority sprite first so the highest-priority one (smallest x,
-        // then smallest OAM index) is drawn last and ends up on top.
-        visible.sort((a, b) => (b.x - a.x) || (b.oamIndex - a.oamIndex));
+        // Draw lowest priority first so the highest ends up on top. CGB orders purely by OAM
+        // index; DMG (and CGB with OPRI set) breaks ties by x coordinate first.
+        if (this.bus.objCoordinatePriority) {
+            visible.sort((a, b) => (b.x - a.x) || (b.oamIndex - a.oamIndex));
+        } else {
+            visible.sort((a, b) => b.oamIndex - a.oamIndex);
+        }
 
         const obp0 = this.bus.readByte(u16(0xff48));
         const obp1 = this.bus.readByte(u16(0xff49));
@@ -297,27 +321,38 @@ export class ppu {
             const yFlip = (sprite.flags >> 6) & 1;
             const xFlip = (sprite.flags >> 5) & 1;
             const behindBg = (sprite.flags >> 7) & 1;
-            const palette = ((sprite.flags >> 4) & 1) ? obp1 : obp0;
+            const dmgPalette = ((sprite.flags >> 4) & 1) ? obp1 : obp0;
+            const cgbBank = cgb ? (sprite.flags >> 3) & 1 : 0;
+            const cgbPalette = sprite.flags & 7;
 
             let tileY = line - sprite.y;
             if (yFlip) tileY = height - 1 - tileY;
 
-            const tileIndex = height === 16 ? (sprite.tile & 0xFE) : sprite.tile;
-            const tileAddr = 0x8000 + tileIndex * 16;
-            const byte1 = this.bus.readByte(u16(tileAddr + tileY * 2));
-            const byte2 = this.bus.readByte(u16(tileAddr + tileY * 2 + 1));
+            const tileIndex = height === 16 ? (sprite.tile & 0xfe) : sprite.tile;
+            const off = tileIndex * 16 + tileY * 2;
+            const byte1 = this.bus.readVram(off, cgbBank);
+            const byte2 = this.bus.readVram(off + 1, cgbBank);
 
             for (let spriteX = 0; spriteX < 8; spriteX++) {
                 const screenX = sprite.x + spriteX;
                 if (screenX < 0 || screenX > 159) continue;
 
                 const bit = xFlip ? spriteX : 7 - spriteX;
-                const colorId = ((byte2 >> bit) & 1) << 1 | ((byte1 >> bit) & 1);
+                const colorId = (((byte2 >> bit) & 1) << 1) | ((byte1 >> bit) & 1);
                 if (colorId === 0) continue; // transparent
 
-                if (behindBg && this.bgColorIds[screenX] !== 0) continue;
+                const bgc = this.bgColorIds[screenX];
+                if (cgb) {
+                    // BG covers the sprite only if the master-priority bit is set, the BG
+                    // pixel isn't colour 0, and either the tile or the sprite asks for it.
+                    if (bgMasterPriority && bgc !== 0 && (this.bgPriority[screenX] || behindBg)) continue;
+                } else if (behindBg && bgc !== 0) {
+                    continue;
+                }
 
-                this.framebuffer[line * 160 + screenX] = (palette >> (colorId * 2)) & 0b11;
+                this.framebuffer[line * 160 + screenX] = cgb
+                    ? cgb555ToRgba(this.bus.objColor555(cgbPalette, colorId))
+                    : DMG_SHADES[(dmgPalette >> (colorId * 2)) & 3];
             }
         }
     }

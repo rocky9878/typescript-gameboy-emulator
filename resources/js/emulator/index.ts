@@ -8,11 +8,9 @@ export * from '@/types/auth';
 export type u8 = number & { readonly __brand: 'u8' };
 export type u16 = number & { readonly __brand: 'u16' };
 
-// JSON encodes a byte array as e.g. "[0,255,12,...]" - each byte costs 2-4 ASCII
-// characters. Base64 costs a flat 4 characters per 3 bytes, which is most of where a
-// save state's size comes from (VRAM/WRAM/OAM/framebuffer/cartridge RAM are all raw byte
-// buffers). Chunked to avoid blowing the call stack on String.fromCharCode(...bytes) for
-// large buffers (e.g. the 23040-byte framebuffer).
+// Base64 (4 chars per 3 bytes) instead of a JSON number array (2-4 chars per byte) for the
+// raw buffers in a save state (VRAM/WRAM/OAM/cartridge RAM). Chunked so
+// String.fromCharCode(...bytes) doesn't blow the call stack on the larger buffers.
 export function bytesToBase64(bytes: Uint8Array): string {
     let binary = '';
     const chunkSize = 0x8000;
@@ -33,6 +31,22 @@ export function base64ToBytes(base64: string): Uint8Array {
     }
 
     return bytes;
+}
+
+// Converts a 15-bit CGB RGB555 colour to a packed 0xAABBGGRR value ready for a canvas
+// Uint32 framebuffer (little-endian: R in the low byte). Uses the gambatte "true colour"
+// correction curve - a straight 5->8 bit scale looks badly oversaturated on an sRGB
+// display because the CGB's LCD was far less vivid.
+export function cgb555ToRgba(color: number): number {
+    const r = color & 0x1f;
+    const g = (color >> 5) & 0x1f;
+    const b = (color >> 10) & 0x1f;
+
+    const rr = (r * 13 + g * 2 + b) >> 1;
+    const gg = (g * 3 + b) << 1;
+    const bb = (r * 3 + g * 2 + b * 11) >> 1;
+
+    return (0xff << 24) | (bb << 16) | (gg << 8) | rr;
 }
 
 export type InstructionType = 'ADC'|'ADD'|'AND'|'BIT'|'CALL'|'CCF'|'CP'|'CPL'|'DAA'|'DEC'|'DI'|'EI'|'HALT'|'INC'|'JP'|'JR'|'LD'|'NOP'|'OR'|'POP'|'PUSH'|'RES'|'RET'|'RETI'|'RL'|'RLA'|'RLC'|'RLCA'|'RR'|'RRA'|'RRC'|'RRCA'|'RST'|'SBC'|'SCF'|'SET'|'SLA'|'SRA'|'SRL'|'STOP'|'SUB'|'SWAP'|'XOR';
@@ -155,12 +169,24 @@ export class registers {
 }
 
 export interface MemoryBusState {
+    cgb: boolean;
     vram: string;
+    vramBank: number;
     wram: string;
+    wramBank: number;
     oam: string;
     io: string;
     hram: string;
     ie: u8;
+    bgPaletteRam: string;
+    objPaletteRam: string;
+    bcps: number;
+    ocps: number;
+    opri: number;
+    hdmaSource: number;
+    hdmaDest: number;
+    hdmaLength: number;
+    hdmaHBlank: boolean;
     mbc: unknown;
     ppu: PpuState;
     joypad: JoypadState;
@@ -173,31 +199,171 @@ export class MemoryBus {
     ppu: ppu = new ppu(this);
     joypad: Joypad = new Joypad(() => this.requestJoypadInterrupt());
     apu: Apu = new Apu();
-    private vram: Uint8Array = new Uint8Array(0x2000);
-    private wram: Uint8Array = new Uint8Array(0x2000);
+
+    // True when running as CGB hardware (see CPU.configureForRom). Gates VRAM/WRAM banking,
+    // the double-speed switch, and disables the DMG-only OAM corruption bug.
+    cgb = false;
+
+    // CGB has 2 switchable 8KB VRAM banks and 8 4KB WRAM banks ($D000-$DFFF region); on DMG
+    // the bank registers are inert and only bank 0 / bank 1 are ever used.
+    private vram: Uint8Array = new Uint8Array(0x4000);
+    private vramBank = 0;
+    private wram: Uint8Array = new Uint8Array(0x8000);
+    // SVBK as written (0-7); 0 selects bank 1 for addressing but still reads back as 0.
+    private wramBank = 1;
     private oam: Uint8Array = new Uint8Array(0xa0);
     private io: Uint8Array = new Uint8Array(0x180);
     private hram: Uint8Array = new Uint8Array(0x7f);
     private ie: u8 = u8(0);
+
+    // CGB palette RAM: 8 palettes x 4 colours x 2 bytes (little-endian RGB555), for BG and
+    // OBJ. BCPS/OCPS ($FF68/$FF6A) hold a 6-bit write index into the respective block plus
+    // an auto-increment flag; BCPD/OCPD ($FF69/$FF6B) read/write at that index. OPRI ($FF6C)
+    // selects sprite priority ordering (0 = OAM index, 1 = X coordinate).
+    private bgPaletteRam = new Uint8Array(64);
+    private objPaletteRam = new Uint8Array(64);
+    private bcpsIndex = 0;
+    private bcpsAutoInc = false;
+    private ocpsIndex = 0;
+    private ocpsAutoInc = false;
+    private opri = 0;
+
+    // VRAM DMA ($FF51-$FF55), CGB only. hdmaLength is bytes still to copy (multiple of 16);
+    // 0 means no transfer in progress. hdmaHBlank distinguishes a general-purpose transfer
+    // (done in one shot) from an HBlank transfer (16 bytes per HBlank). hdmaStallCycles is
+    // handed to the CPU to freeze it for the duration of a general-purpose transfer.
+    private hdmaSource = 0;
+    private hdmaDest = 0; // offset within VRAM, 0x0000-0x1FF0
+    private hdmaLength = 0;
+    private hdmaHBlank = false;
+    private hdmaStallCycles = 0;
 
     async init(romPath: string): Promise<void> {
         await this.rom.loadRom(romPath);
         this.mbc = createMbc(this.rom.memory);
     }
 
+    // The boot ROM leaves the I/O registers in a specific state before handing off to the
+    // cartridge. This engine skips the boot ROM, so games that assume that state - e.g.
+    // Pokémon Gold/Silver, which waits for LY to hit $91 without ever enabling the LCD
+    // itself, relying on the boot ROM having left it on - hang without this.
+    applyBootState(): void {
+        const set = (addr: number, value: number) => { this.io[addr - 0xfe00] = value; };
+        set(0xff00, 0xcf); // P1
+        set(0xff02, 0x7e); // SC
+        set(0xff07, 0xf8); // TAC
+        set(0xff0f, 0xe1); // IF
+        set(0xff40, 0x91); // LCDC - LCD on, BG on, tile data $8000
+        set(0xff41, 0x81); // STAT
+        set(0xff46, 0xff); // DMA
+        set(0xff47, 0xfc); // BGP
+        set(0xff48, 0xff); // OBP0
+        set(0xff49, 0xff); // OBP1
+        // Sound registers are serviced by the APU, not `io`; its own reset state stands in.
+    }
+
     requestJoypadInterrupt(): void {
         this.writeByte(u16(0xff0f), u8(this.readByte(u16(0xff0f)) | (1 << 4)));
     }
 
+    // Index into `wram` for an address in $C000-$DFFF (callers map echo RAM down first).
+    // $C000-$CFFF is always bank 0; $D000-$DFFF is the switchable bank (1-7 on CGB, always 1
+    // on DMG).
+    private wramIndex(address: number): number {
+        if (address < 0xd000) return address - 0xc000;
+        return (this.wramBank || 1) * 0x1000 + (address - 0xd000);
+    }
+
+    // Direct VRAM access for the PPU, bypassing bank selection so it can read whichever bank
+    // a tile / attribute lives in regardless of what the CPU last selected.
+    readVram(offset: number, bank: number): u8 {
+        return u8(this.vram[bank * 0x2000 + offset]);
+    }
+
+    // Raw 15-bit RGB555 for a CGB palette entry. palette 0-7, colorId 0-3.
+    bgColor555(palette: number, colorId: number): number {
+        const i = palette * 8 + colorId * 2;
+        return this.bgPaletteRam[i] | (this.bgPaletteRam[i + 1] << 8);
+    }
+
+    objColor555(palette: number, colorId: number): number {
+        const i = palette * 8 + colorId * 2;
+        return this.objPaletteRam[i] | (this.objPaletteRam[i + 1] << 8);
+    }
+
+    // True when sprites should be prioritised by X coordinate (DMG behaviour) rather than
+    // OAM index (CGB default). Always true on DMG hardware.
+    get objCoordinatePriority(): boolean {
+        return !this.cgb || (this.opri & 1) === 1;
+    }
+
+    // Number of extra T-cycles the CPU should burn for a just-completed general-purpose VRAM
+    // DMA, consumed once.
+    takeHdmaStall(): number {
+        const c = this.hdmaStallCycles;
+        this.hdmaStallCycles = 0;
+        return c;
+    }
+
+    // Copies `bytes` from the current HDMA source to VRAM (current bank), advancing both
+    // pointers. Dest wraps within the 8KB bank.
+    private hdmaCopy(bytes: number): void {
+        for (let i = 0; i < bytes; i++) {
+            this.vram[this.vramBank * 0x2000 + this.hdmaDest] = this.readByte(u16(this.hdmaSource));
+            this.hdmaSource = (this.hdmaSource + 1) & 0xffff;
+            this.hdmaDest = (this.hdmaDest + 1) & 0x1fff;
+        }
+    }
+
+    private startHdma(value: number): void {
+        const hblank = (value & 0x80) !== 0;
+        const length = ((value & 0x7f) + 1) * 16;
+
+        // Writing bit 7 = 0 during an active HBlank transfer aborts it.
+        if (this.hdmaLength > 0 && this.hdmaHBlank && !hblank) {
+            this.hdmaLength = 0;
+            return;
+        }
+
+        this.hdmaLength = length;
+        this.hdmaHBlank = hblank;
+
+        if (!hblank) {
+            this.hdmaCopy(length);
+            this.hdmaLength = 0;
+            this.hdmaStallCycles += length * 2; // ~2 T-cycles/byte at single speed
+        }
+    }
+
+    // Called by the PPU on entry to each HBlank. Transfers the next 16 bytes of an active
+    // HBlank VRAM DMA.
+    hblankDmaStep(): void {
+        if (this.hdmaLength === 0 || !this.hdmaHBlank) return;
+        const chunk = Math.min(16, this.hdmaLength);
+        this.hdmaCopy(chunk);
+        this.hdmaLength -= chunk;
+        this.hdmaStallCycles += chunk * 2;
+    }
+
     readByte(address: u16): u8 {
         if(address <= 0x7fff) return this.mbc.readRom(address);
-        if(address <= 0x9fff) return u8(this.vram[address - 0x8000]);
+        if(address <= 0x9fff) return u8(this.vram[this.vramBank * 0x2000 + (address - 0x8000)]);
         if(address <= 0xbfff) return this.mbc.readRam(address);
-        if(address <= 0xdfff) return u8(this.wram[address - 0xc000]);
-        if(address <= 0xfdff) return u8(this.wram[address - 0xe000]); // echo RAM mirrors wram
+        if(address <= 0xdfff) return u8(this.wram[this.wramIndex(address)]);
+        if(address <= 0xfdff) return u8(this.wram[this.wramIndex(address - 0x2000)]); // echo RAM mirrors wram
         if(address <= 0xfe9f) return u8(this.oam[address - 0xfe00]);
         if(address === 0xff00) return this.joypad.readRegister();
         if((address >= 0xff10 && address <= 0xff2f) || (address >= 0xff30 && address <= 0xff3f)) return u8(this.apu.readRegister(address));
+        if(address === 0xff4f) return u8(this.cgb ? 0xfe | this.vramBank : 0xff);
+        if(address === 0xff4d) return u8(this.cgb ? 0x7e | (this.io[0xff4d - 0xfe00] & 0x81) : 0xff);
+        if(address === 0xff70) return u8(this.cgb ? 0xf8 | (this.wramBank & 7) : 0xff);
+        if(address === 0xff68) return u8(this.cgb ? 0x40 | this.bcpsIndex | (this.bcpsAutoInc ? 0x80 : 0) : 0xff);
+        if(address === 0xff69) return u8(this.cgb ? this.bgPaletteRam[this.bcpsIndex] : 0xff);
+        if(address === 0xff6a) return u8(this.cgb ? 0x40 | this.ocpsIndex | (this.ocpsAutoInc ? 0x80 : 0) : 0xff);
+        if(address === 0xff6b) return u8(this.cgb ? this.objPaletteRam[this.ocpsIndex] : 0xff);
+        if(address === 0xff6c) return u8(this.cgb ? 0xfe | (this.opri & 1) : 0xff);
+        if(address >= 0xff51 && address <= 0xff54) return u8(0xff); // HDMA1-4 are write-only
+        if(address === 0xff55) return u8(this.cgb && this.hdmaLength > 0 ? (this.hdmaLength / 16 - 1) & 0x7f : 0xff);
         if(address <= 0xff7f) return u8(this.io[address - 0xfe00]);
         if(address <= 0xfffe) return u8(this.hram[address - 0xff80]);
         return this.ie;
@@ -218,15 +384,27 @@ export class MemoryBus {
 
     writeByte(address: u16, byte: u8): u8 {
         if(address <= 0x7fff) { this.mbc.writeRom(address, byte); return byte; }
-        if(address <= 0x9fff) return this.vram[address - 0x8000] = byte;
+        if(address <= 0x9fff) return this.vram[this.vramBank * 0x2000 + (address - 0x8000)] = byte;
         if(address <= 0xbfff) { this.mbc.writeRam(address, byte); return byte; }
-        if(address <= 0xdfff) return this.wram[address - 0xc000] = byte;
-        if(address <= 0xfdff) return this.wram[address - 0xe000] = byte; // echo RAM mirrors wram
+        if(address <= 0xdfff) return this.wram[this.wramIndex(address)] = byte;
+        if(address <= 0xfdff) return this.wram[this.wramIndex(address - 0x2000)] = byte; // echo RAM mirrors wram
         if(address <= 0xfe9f) return this.oam[address - 0xfe00] = byte;
         if(address === 0xff00) { this.joypad.writeRegister(byte); return byte; }
         if((address >= 0xff10 && address <= 0xff2f) || (address >= 0xff30 && address <= 0xff3f)) { this.apu.writeRegister(address, byte); return byte; }
         if(address === 0xff04) { this.onDivWrite?.(); return this.io[address - 0xfe00] = u8(0); }
         if(address === 0xff46) { this.startOamDma(byte); return this.io[address - 0xfe00] = byte; }
+        if(address === 0xff4f) { if (this.cgb) this.vramBank = byte & 1; return this.io[address - 0xfe00] = byte; }
+        if(address === 0xff70) { if (this.cgb) this.wramBank = byte & 7; return this.io[address - 0xfe00] = byte; }
+        if(address === 0xff68) { if (this.cgb) { this.bcpsIndex = byte & 0x3f; this.bcpsAutoInc = (byte & 0x80) !== 0; } return this.io[address - 0xfe00] = byte; }
+        if(address === 0xff69) { if (this.cgb) { this.bgPaletteRam[this.bcpsIndex] = byte; if (this.bcpsAutoInc) this.bcpsIndex = (this.bcpsIndex + 1) & 0x3f; } return this.io[address - 0xfe00] = byte; }
+        if(address === 0xff6a) { if (this.cgb) { this.ocpsIndex = byte & 0x3f; this.ocpsAutoInc = (byte & 0x80) !== 0; } return this.io[address - 0xfe00] = byte; }
+        if(address === 0xff6b) { if (this.cgb) { this.objPaletteRam[this.ocpsIndex] = byte; if (this.ocpsAutoInc) this.ocpsIndex = (this.ocpsIndex + 1) & 0x3f; } return this.io[address - 0xfe00] = byte; }
+        if(address === 0xff6c) { if (this.cgb) this.opri = byte & 1; return this.io[address - 0xfe00] = byte; }
+        if(address === 0xff51) { this.hdmaSource = (this.hdmaSource & 0x00ff) | (byte << 8); return byte; }
+        if(address === 0xff52) { this.hdmaSource = (this.hdmaSource & 0xff00) | (byte & 0xf0); return byte; }
+        if(address === 0xff53) { this.hdmaDest = (this.hdmaDest & 0x00ff) | ((byte & 0x1f) << 8); return byte; }
+        if(address === 0xff54) { this.hdmaDest = (this.hdmaDest & 0xff00) | (byte & 0xf0); return byte; }
+        if(address === 0xff55) { if (this.cgb) this.startHdma(byte); return byte; }
         if(address <= 0xff7f) return this.io[address - 0xfe00] = byte;
         if(address <= 0xfffe) return this.hram[address - 0xff80] = byte;
         return this.ie = byte;
@@ -378,6 +556,7 @@ export class MemoryBus {
     // inc/dec, or an actual OAM read/write) while the PPU may be mid OAM-scan. No-ops
     // outside mode 2.
     triggerOamCorruption(kind: 'write' | 'read'): void {
+        if (this.cgb) return; // CGB hardware doesn't have the OAM bug
         const row = this.ppu.oamScanRow();
         if (row === null) return;
         if (kind === 'write') this.oamWriteCorruption(row);
@@ -388,12 +567,24 @@ export class MemoryBus {
     // loaded, not that it re-embeds the ROM image itself.
     getState(): MemoryBusState {
         return {
+            cgb: this.cgb,
             vram: bytesToBase64(this.vram),
+            vramBank: this.vramBank,
             wram: bytesToBase64(this.wram),
+            wramBank: this.wramBank,
             oam: bytesToBase64(this.oam),
             io: bytesToBase64(this.io),
             hram: bytesToBase64(this.hram),
             ie: this.ie,
+            bgPaletteRam: bytesToBase64(this.bgPaletteRam),
+            objPaletteRam: bytesToBase64(this.objPaletteRam),
+            bcps: this.bcpsIndex | (this.bcpsAutoInc ? 0x80 : 0),
+            ocps: this.ocpsIndex | (this.ocpsAutoInc ? 0x80 : 0),
+            opri: this.opri,
+            hdmaSource: this.hdmaSource,
+            hdmaDest: this.hdmaDest,
+            hdmaLength: this.hdmaLength,
+            hdmaHBlank: this.hdmaHBlank,
             mbc: this.mbc.getState(),
             ppu: this.ppu.getState(),
             joypad: this.joypad.getState(),
@@ -402,12 +593,27 @@ export class MemoryBus {
     }
 
     setState(state: MemoryBusState): void {
+        this.cgb = state.cgb;
         this.vram.set(base64ToBytes(state.vram));
+        this.vramBank = state.vramBank;
         this.wram.set(base64ToBytes(state.wram));
+        this.wramBank = state.wramBank;
         this.oam.set(base64ToBytes(state.oam));
         this.io.set(base64ToBytes(state.io));
         this.hram.set(base64ToBytes(state.hram));
         this.ie = u8(state.ie);
+        this.bgPaletteRam.set(base64ToBytes(state.bgPaletteRam));
+        this.objPaletteRam.set(base64ToBytes(state.objPaletteRam));
+        this.bcpsIndex = state.bcps & 0x3f;
+        this.bcpsAutoInc = (state.bcps & 0x80) !== 0;
+        this.ocpsIndex = state.ocps & 0x3f;
+        this.ocpsAutoInc = (state.ocps & 0x80) !== 0;
+        this.opri = state.opri;
+        this.hdmaSource = state.hdmaSource;
+        this.hdmaDest = state.hdmaDest;
+        this.hdmaLength = state.hdmaLength;
+        this.hdmaHBlank = state.hdmaHBlank;
+        this.hdmaStallCycles = 0;
         this.mbc.setState(state.mbc);
         this.ppu.setState(state.ppu);
         this.joypad.setState(state.joypad);
