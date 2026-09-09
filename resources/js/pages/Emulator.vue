@@ -182,10 +182,28 @@ function promptUpload(type: 'rom'|'state') {
     fileInput.value.ariaLabel = type;
 }
 
-function handleUpload(event: Event) {
+async function handleUpload(event: Event) {
     const file = (event.target as HTMLInputElement)?.files?.[0];
     if(!file) return;
     if(fileInput.value?.ariaLabel === 'state') file.text().then((value) => loadState(value));
+    else {
+        clearInterval(autosaveInterval);
+        disposeEmulator?.();
+
+        file.bytes().then(async (value) => {
+            let handle = await run(value, canvas.value ?? undefined, consoleMode.value)
+            cpu = handle.cpu;
+            disposeEmulator = handle.dispose;
+            cgbActive.value = handle.cgb;
+            cpu.setVolume(volume.value);
+        });
+
+        rom.value = file.name;
+
+        autosaveInterval = setInterval(() => {
+            onSaveClick(10);
+        }, 1000 * 60 * 5);
+    }
 }
 
 function instabilityWarning() {
@@ -200,13 +218,12 @@ function instabilityWarning() {
     <div class="overflow-hidden">
         <div class="flex gap-2 flex-col min-h-[calc(100vh-80px)] w-full items-center justify-center scale-110 md:scale-140">
             <div class="rounded-full flex text-violet-800 dark:text-violet-200 bg-violet-100 dark:bg-violet-950/50 ring-1 ring-violet-300 dark:ring-violet-800 shadow-sm gap-2">
-                <div title="Start ROM" class="cursor-pointer flex justify-center items-center size-10 relative rounded-full" @click="loadRom()">
+                <div title="Start ROM" class="cursor-pointer flex justify-center items-center size-10 relative rounded-full">
                     <DropdownMenu>
                         <DropdownMenuTrigger class="mx-auto h-full cursor-pointer"><Upload/></DropdownMenuTrigger>
                         <DropdownMenuContent class="gap-1 max-w-screen">
                             <DropdownMenuLabel class="col-span-3 text-center">Load Rom</DropdownMenuLabel>
-                            <DropdownMenuItem class="col-span-3 text-center block whitespace-nowrap" @click="promptUpload('rom')">Import Rom</DropdownMenuItem>
-                            <DropdownMenuItem class="col-span-3 text-center block whitespace-nowrap" @click="promptUpload('rom')">Import Rom</DropdownMenuItem>
+                            <DropdownMenuItem class="col-span-3 text-center block whitespace-nowrap" @click="loadRom()">very secret and very legal pokemon red Rom</DropdownMenuItem>
                             <DropdownMenuItem class="col-span-3 text-center block whitespace-nowrap" @click="promptUpload('rom')">Import Rom</DropdownMenuItem>
                         </DropdownMenuContent>
                     </DropdownMenu>

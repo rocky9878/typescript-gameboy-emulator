@@ -1389,22 +1389,30 @@ export type RunHandle = {
     cpu: CPU;
     // Whether the ROM is running in CGB mode (colour). Reflects the resolved `mode`.
     cgb: boolean;
-    // Tears down the rAF loop, event listeners and AudioContext. Must run on SPA navigation
-    // away, or the key listeners keep swallowing Z/X/Enter/arrows on other pages.
+    // Tears down the rAF loop and event listeners, and suspends the (shared, module-level)
+    // AudioContext. Must run on SPA navigation away, or the key listeners keep swallowing
+    // Z/X/Enter/arrows on other pages. Safe to call before starting another run().
     dispose: () => void;
 };
 
 export type ConsoleMode = 'auto' | 'dmg' | 'cgb';
 
-export async function run(rom: string, canvas?: HTMLCanvasElement, mode: ConsoleMode = 'auto'): Promise<RunHandle> {
+export async function run(rom: string|Uint8Array<ArrayBuffer>, canvas?: HTMLCanvasElement, mode: ConsoleMode = 'auto'): Promise<RunHandle> {
     const cpu = new CPU();
-    const response = await fetch(rom);
-    console.log('test');
-    if (!response.ok) {
-        throw new Error(`Failed to load ROM "${rom}": ${response.status} ${response.statusText}`);
+    let bytes;
+
+    if(typeof rom === "string") {
+        const response = await fetch(rom);
+
+        if (!response.ok) {
+            throw new Error(`Failed to load ROM "${rom}": ${response.status} ${response.statusText}`);
+        }
+        let buffer = await response.arrayBuffer();
+        bytes = new Uint8Array(buffer);
+    } else {
+        bytes = rom;
     }
-    const buffer = await response.arrayBuffer();
-    const bytes = new Uint8Array(buffer);
+
     // A returned HTML error page would otherwise be parsed as a (garbage) cartridge.
     if (bytes.length < 0x150 || bytes[0x104] !== 0xce || bytes[0x105] !== 0xed) {
         throw new Error(`"${rom}" is not a Game Boy ROM (missing Nintendo logo header)`);
@@ -1666,7 +1674,10 @@ export async function run(rom: string, canvas?: HTMLCanvasElement, mode: Console
         rawSamples.length = 0;
         pendingSamples.length = 0;
 
-        void audioCtx.close();
+        // Suspend, don't close: audioCtx is a module singleton shared by every run(), and a
+        // closed context can't be reused - the next run() (loading another ROM) would throw
+        // "Can't resume if the control thread state is closed" on the first keypress.
+        void audioCtx.suspend();
     };
 
     return { cpu, cgb: cpu.bus.cgb, dispose };
