@@ -292,7 +292,7 @@ function instabilityWarning() {
                             @touchstart.prevent="press('up')"
                             @touchend.prevent="release('up')"
                         >
-                            ▲
+                            &#x25B2;&#xFE0E;
                         </button>
                         <div></div>
 
@@ -306,7 +306,7 @@ function instabilityWarning() {
                             @touchstart.prevent="press('left')"
                             @touchend.prevent="release('left')"
                         >
-                            ◀
+                            &#x25C0;&#xFE0E;
                         </button>
                         <div class="rounded-full bg-neutral-800"></div>
                         <button
@@ -319,7 +319,7 @@ function instabilityWarning() {
                             @touchstart.prevent="press('right')"
                             @touchend.prevent="release('right')"
                         >
-                            ▶
+                            &#x25B6;&#xFE0E;
                         </button>
 
                         <div></div>
@@ -333,7 +333,7 @@ function instabilityWarning() {
                             @touchstart.prevent="press('down')"
                             @touchend.prevent="release('down')"
                         >
-                            ▼
+                            &#x25BC;&#xFE0E;
                         </button>
                         <div></div>
                     </div>
