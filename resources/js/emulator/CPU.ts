@@ -1492,6 +1492,7 @@ export async function run(rom: string|Uint8Array<ArrayBuffer>, canvas?: HTMLCanv
 
         if (button) {
             e.preventDefault();
+            e.stopPropagation();
             cpu.bus.joypad.setButton(button, true);
         }
     };
@@ -1500,11 +1501,12 @@ export async function run(rom: string|Uint8Array<ArrayBuffer>, canvas?: HTMLCanv
 
         if (button) {
             e.preventDefault();
+            e.stopPropagation();
             cpu.bus.joypad.setButton(button, false);
         }
     };
-    window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('keydown', onKeyDown, true);
+    window.addEventListener('keyup', onKeyUp, true);
 
     const ctx = canvas?.getContext('2d');
 
@@ -1662,8 +1664,8 @@ export async function run(rom: string|Uint8Array<ArrayBuffer>, canvas?: HTMLCanv
         disposed = true;
 
         cancelAnimationFrame(rafId);
-        window.removeEventListener('keydown', onKeyDown);
-        window.removeEventListener('keyup', onKeyUp);
+        window.removeEventListener('keydown', onKeyDown, true);
+        window.removeEventListener('keyup', onKeyUp, true);
         window.removeEventListener('pointerdown', onPointerDown);
         window.removeEventListener('pagehide', onPageHide);
         window.removeEventListener('pageshow', onPageShow);
