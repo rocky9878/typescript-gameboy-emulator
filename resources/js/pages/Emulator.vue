@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ChevronsRight, HardDriveDownload, HardDriveUpload, Upload, Volume2 } from '@lucide/vue';
+import { ChevronsRight, ExternalLink, HardDriveDownload, HardDriveUpload, Upload, Volume2 } from '@lucide/vue';
 import { onUnmounted, ref, useTemplateRef } from 'vue';
 import { run, setCpuSpeed } from '@/emulator/CPU';
 import type { CPU } from '@/emulator/CPU';
@@ -36,6 +36,29 @@ const consoleMode = ref<'auto' | 'dmg' | 'cgb'>('auto');
 const cgbActive = ref<boolean>(false);
 const fileInput = useTemplateRef('romInput');
 const volume = ref<number>(Number(localStorage.getItem('emulator:volume') ?? '0.5'));
+const games = [
+    {
+        title: 'OutRun GB',
+        credit: 'rocketship park',
+        link: 'https://rocketshippark.itch.io/what-if-outrun',
+        path: '/OutRun_GB_v1.0.gbc',
+        img: '/outrun.png',
+    },
+    {
+        title: 'Halo: Combat Devolved',
+        credit: 'SofaSwordsman',
+        link: 'https://sofaswordsman.itch.io/halo-combat-devolved',
+        path: '/Halo_Combat_Devolved_v2.50.gbc',
+        img: '/halo-devolved.png',
+    },
+    {
+        title: 'Walfie\'s Nonograms',
+        credit: 'Walfie',
+        link: 'https://walfie.itch.io/walfies-nonograms',
+        path: '/walfies-nonograms.gbc',
+        img: '/walfies-nonograms.png',
+    },
+];
 
 function confirmExit() {
     return "Unsaved progress will be lost on page exit.";
@@ -106,18 +129,18 @@ async function onLoadClick(slot: number) {
     }
 }
 
-async function loadRom() {
+async function loadRom(path: string) {
     if(rom.value) {
         clearInterval(autosaveInterval);
         disposeEmulator?.();
     };
-    const handle = await run('/Pokémon_red.gb', canvas.value ?? undefined, consoleMode.value);
+    const handle = await run(path, canvas.value ?? undefined, consoleMode.value);
     cpu = handle.cpu;
     disposeEmulator = handle.dispose;
     cgbActive.value = handle.cgb;
     cpu.setVolume(volume.value);
 
-    rom.value = 'Pokémon_red';
+    rom.value = baseName(path);
 
     autosaveInterval = setInterval(() => {
         onSaveClick(10);
@@ -238,7 +261,10 @@ function instabilityWarning() {
                         <DropdownMenuTrigger class="mx-auto h-full cursor-pointer"><Upload/></DropdownMenuTrigger>
                         <DropdownMenuContent class="gap-1 max-w-screen sm:max-w-140">
                             <DropdownMenuLabel class="col-span-3 text-center">Load Rom</DropdownMenuLabel>
-                            <DropdownMenuItem class="col-span-3 text-center block whitespace-nowrap" @click="loadRom()">very secret and very legal pokemon red Rom</DropdownMenuItem>
+                            <DropdownMenuItem v-for="game in games" class="col-span-3 text-center block whitespace-nowrap mx-auto" @click="loadRom(game.path)">
+                                <img :src="game.img" :alt="game.title" class="max-w-30 max-h-30 mb-1 border rounded aspect-square">
+                                <a :href="game.link" target="_blank" rel="noopener noreferrer" @click.stop class="text-blue-500 hover:underline flex items-center gap-1 mx-auto w-fit">{{ game.credit }}<ExternalLink/></a>
+                            </DropdownMenuItem>
                             <DropdownMenuItem class="col-span-3 text-center block whitespace-nowrap" @click="promptUpload('rom')">Import Rom</DropdownMenuItem>
                         </DropdownMenuContent>
                     </DropdownMenu>
