@@ -258,7 +258,7 @@ function instabilityWarning() {
             <div class="rounded-full flex text-violet-800 dark:text-violet-200 bg-violet-100 dark:bg-violet-950/50 ring-1 ring-violet-300 dark:ring-violet-800 shadow-sm gap-2">
                 <div title="Start ROM" class="cursor-pointer flex justify-center items-center size-10 relative rounded-full">
                     <DropdownMenu>
-                        <DropdownMenuTrigger class="mx-auto h-full cursor-pointer"><Upload/></DropdownMenuTrigger>
+                        <DropdownMenuTrigger class="mx-auto h-full cursor-pointer"><Upload :class="{'animate-bounce': !rom}"/></DropdownMenuTrigger>
                         <DropdownMenuContent class="gap-1 max-w-screen sm:max-w-140">
                             <DropdownMenuLabel class="col-span-3 text-center">Load Rom</DropdownMenuLabel>
                             <DropdownMenuItem v-for="game in games" class="col-span-3 text-center block whitespace-nowrap mx-auto" @click="loadRom(game.path)">
